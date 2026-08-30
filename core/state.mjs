@@ -92,6 +92,11 @@ export function resetGate(provider, input, options = {}) {
 export function ensureGateState(provider, input, options = {}) {
   const current = readGateState(provider, input, options);
   if (current.ok) {
+    if (isNewerTurn(current.state, input)) {
+      // The host reports a turn the state has never seen: the prompt hook
+      // that should have reset the gate was skipped, so reset now.
+      return resetGate(provider, input, options);
+    }
     const state = reconcilePromptRecord(provider, input, current.state, options);
     if (canAdoptTurn(state, input)) {
       const adopted = {
@@ -177,6 +182,11 @@ export function completeGateControl(provider, input, action, options = {}) {
 export function clearGateControl(provider, input, action, options = {}) {
   assertControlAction(action);
   const current = requireCurrentState(provider, input, options);
+  if (getToolUseId(input) === null) {
+    // Without a tool_use_id the record is shared per action; clearing it
+    // would also drop a parallel control that succeeded. Leave it for reset.
+    return current;
+  }
   const armedPath = armedControlPath(provider, input, action, options);
   if (matchesArmedControl(readArmedControl(armedPath, options), current, input, action)) {
     safeUnlink(options.fs ?? fs, armedPath);
@@ -282,8 +292,9 @@ function getSessionId(input) {
   return sessionId;
 }
 
+// Codex turn_id, Cursor generation_id, Claude Code prompt_id (2.1.196+).
 function getTurnId(input) {
-  const turnId = input?.turn_id ?? input?.generation_id;
+  const turnId = input?.turn_id ?? input?.generation_id ?? input?.prompt_id;
   return typeof turnId === "string" && turnId !== ""
     ? turnId
     : null;
@@ -341,10 +352,13 @@ function canAdoptTurn(state, input) {
  * the transcript; if the prompt hook was skipped or timed out, PreToolUse sees
  * a newer record and resets to pending instead of inheriting the pass.
  *
- * Policy when the transcript cannot be judged (missing, unreadable, or no
- * recognizable prompt record): a satisfied gate returns to pending, and the
- * re-pass sticks until a record becomes judgeable again. A pending gate with
- * no record adopts the first record it can see.
+ * This is the fallback for hosts that provide no turn id at all (Claude Code
+ * before prompt_id existed). Policy when the transcript cannot be judged
+ * (missing, unreadable, or no recognizable prompt record): a satisfied gate
+ * returns to pending, and the re-pass sticks only until a record becomes
+ * judgeable again, at which point it is reset because it cannot be tied to
+ * the current prompt. A pending gate with no record adopts the first record
+ * it can see.
  */
 function reconcilePromptRecord(provider, input, state, options) {
   if (state.turnId !== null || typeof input?.transcript_path !== "string" || input.transcript_path === "") {
@@ -357,14 +371,13 @@ function reconcilePromptRecord(provider, input, state, options) {
   if (record === null) {
     return SATISFIED.has(state.status) ? resetGate(provider, input, options) : state;
   }
-  if (state.promptRecord === null) {
-    if (!SATISFIED.has(state.status)) {
-      const adopted = { ...state, promptRecord: record, updatedAt: new Date().toISOString() };
-      writeGateState(provider, input, adopted, options);
-      return adopted;
-    }
-    return state;
+  if (state.promptRecord === null && !SATISFIED.has(state.status)) {
+    const adopted = { ...state, promptRecord: record, updatedAt: new Date().toISOString() };
+    writeGateState(provider, input, adopted, options);
+    return adopted;
   }
+  // Either a newer record, or a pass granted while nothing was judgeable:
+  // in both cases the pass cannot be tied to the current prompt.
   return resetGate(provider, input, options);
 }
 
@@ -373,6 +386,11 @@ function getPromptRecord(input, options) {
     return null;
   }
   return latestHumanPrompt(input.transcript_path, options.fs ?? fs);
+}
+
+function isNewerTurn(state, input) {
+  const inputTurnId = getTurnId(input);
+  return state.turnId !== null && inputTurnId !== null && state.turnId !== inputTurnId;
 }
 
 function matchesCurrentTurn(state, input) {

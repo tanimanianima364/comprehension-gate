@@ -6,11 +6,11 @@ import fs from "node:fs";
 export const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
 
 /*
- * Claude Code hook payloads carry no turn id, so the transcript is the only
- * per-turn signal available at PreToolUse. Returns an identity for the latest
- * human prompt record, or null when none can be determined. The identity is
- * the record's byte offset plus its uuid (or a digest of the record), so the
- * same prompt text submitted twice yields two different identities.
+ * Fallback turn signal for hosts that provide no turn id (Claude Code before
+ * prompt_id existed). Returns an identity for the latest human prompt record
+ * in the transcript, or null when none can be determined: the record's uuid
+ * when it has one, otherwise its absolute byte offset plus a digest of the
+ * raw line, so the same prompt text submitted twice yields two identities.
  */
 export function latestHumanPrompt(transcriptPath, filesystem = fs) {
   let tail;
@@ -20,31 +20,37 @@ export function latestHumanPrompt(transcriptPath, filesystem = fs) {
     return null;
   }
 
-  const lines = tail.text.split("\n");
-  let offset = tail.start + Buffer.byteLength(tail.text, "utf8");
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    offset -= Buffer.byteLength(line, "utf8") + (index === lines.length - 1 ? 0 : 1);
-    if (index === 0 && tail.start > 0) {
+  const { buffer, start } = tail;
+  let end = buffer.length;
+  while (end > 0) {
+    const newline = buffer.lastIndexOf(0x0a, end - 1);
+    const lineStart = newline + 1;
+    if (lineStart === 0 && start > 0) {
       break; // The first line may be cut by the tail window.
     }
+    const line = buffer.subarray(lineStart, end);
     const entry = parseRecord(line);
     if (entry !== null && isHumanPrompt(entry)) {
-      const marker = typeof entry.uuid === "string" && entry.uuid !== ""
-        ? entry.uuid
-        : createHash("sha256").update(line).digest("hex");
-      return `${offset}:${marker}`;
+      return identityOf(entry, line, start + lineStart);
     }
+    end = newline < 0 ? 0 : newline;
   }
   return null;
 }
 
+function identityOf(entry, line, offset) {
+  if (typeof entry.uuid === "string" && entry.uuid !== "") {
+    return `uuid:${entry.uuid}`;
+  }
+  return `offset:${offset}:${createHash("sha256").update(line).digest("hex")}`;
+}
+
 function parseRecord(line) {
-  if (line.trim() === "") {
+  if (line.length === 0) {
     return null;
   }
   try {
-    const entry = JSON.parse(line);
+    const entry = JSON.parse(line.toString("utf8"));
     return entry && typeof entry === "object" ? entry : null;
   } catch {
     return null;
@@ -75,7 +81,7 @@ function readTail(filePath, filesystem) {
     const start = size - length;
     const buffer = Buffer.alloc(length);
     const bytesRead = filesystem.readSync(descriptor, buffer, 0, length, start);
-    return { start, text: buffer.subarray(0, bytesRead).toString("utf8") };
+    return { start, buffer: buffer.subarray(0, bytesRead) };
   } finally {
     filesystem.closeSync(descriptor);
   }

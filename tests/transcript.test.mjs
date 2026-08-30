@@ -91,3 +91,21 @@ function writeTranscript(entries) {
   );
   return file;
 }
+
+test("records with a uuid are identified by the uuid alone", () => {
+  const file = writeTranscript([human("hello", { uuid: "u-only" })]);
+  assert.equal(latestHumanPrompt(file), "uuid:u-only");
+});
+
+test("record offsets stay stable when the tail window starts inside a multi-byte character", () => {
+  // "あ" is 3 bytes; a 4 MiB window that starts inside one must not shift later offsets.
+  const filler = JSON.stringify({ type: "assistant", message: { content: "あ".repeat(400) } });
+  const fillerCount = Math.ceil(TRANSCRIPT_TAIL_BYTES / Buffer.byteLength(filler)) + 2;
+  const file = writeTranscript([...Array.from({ length: fillerCount }, () => filler), human("no uuid here")]);
+  const first = latestHumanPrompt(file);
+  assert.notEqual(first, null);
+  for (const shift of [1, 2, 3, 4]) {
+    fs.appendFileSync(file, `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(shift) } })}\n`);
+    assert.equal(latestHumanPrompt(file), first, `shift ${shift}`);
+  }
+});

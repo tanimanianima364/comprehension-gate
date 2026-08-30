@@ -244,8 +244,10 @@ function detectProvider(mode, env) {
   return "claude";
 }
 
+// Exact, case-insensitive match only; stripping characters would let
+// "PreToolUse2" or "Pre-Tool-Use" pass as a known event.
 function normalizeEvent(event) {
-  return String(event ?? "").replaceAll(/[^a-z]/gi, "").toLowerCase();
+  return String(event ?? "").toLowerCase();
 }
 
 function classifyTool(toolName) {
