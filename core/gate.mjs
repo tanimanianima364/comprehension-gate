@@ -105,6 +105,8 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const commandOptions = controlCommandOptions(options);
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
+  // Only trusted lifecycle events may record the workspace Codex inspection is pinned to.
+  const trustedReset = { workspace: normalizeHookWorkspace(input?.cwd, commandOptions.platform) };
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
   const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
 
@@ -120,10 +122,10 @@ export function handleHook(input, mode = "compatible", options = {}) {
       if (source === "compact") {
         const current = readGateState(provider, input, stateOptions);
         if (!current.ok) {
-          resetGate(provider, input, stateOptions);
+          resetGate(provider, input, stateOptions, trustedReset);
         }
       } else {
-        resetGate(provider, input, stateOptions);
+        resetGate(provider, input, stateOptions, trustedReset);
       }
       return contextResult(
         mode,
@@ -133,7 +135,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
     }
 
     if (isPromptEvent) {
-      resetGate(provider, input, stateOptions);
+      resetGate(provider, input, stateOptions, trustedReset);
       return contextResult(
         mode,
         "UserPromptSubmit",
@@ -153,17 +155,20 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    ensureGateState(provider, input, stateOptions);
-    const toolKind = classifyTool(input?.tool_name);
+    const state = ensureGateState(provider, input, stateOptions);
+    const toolKind = classifyTool(input?.tool_name, provider);
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
     }
-    if (provider === "codex" && codexInspectionAction(input, commandOptions)) {
+    if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
       return allowResult();
     }
-    if (toolKind === "read") {
+    if (toolKind === "read" || toolKind === "harness") {
+      return allowResult();
+    }
+    if (toolKind === "network" && env.COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION === "1") {
       return allowResult();
     }
 
@@ -250,11 +255,11 @@ function normalizeEvent(event) {
   return String(event ?? "").toLowerCase();
 }
 
-function classifyTool(toolName) {
+function classifyTool(toolName, provider = null) {
   // Exact, case-insensitive match only. Stripping characters would let names
   // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
   const normalized = String(toolName ?? "").toLowerCase();
-  if (READ_ONLY_TOOLS.has(normalized)) {
+  if (READ_ONLY_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "read";
   }
   if (WRITE_TOOLS.has(normalized)) {
@@ -262,6 +267,12 @@ function classifyTool(toolName) {
   }
   if (SHELL_TOOLS.has(normalized)) {
     return "shell";
+  }
+  if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
+    return "harness";
+  }
+  if (NETWORK_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
+    return "network";
   }
   return "other";
 }
@@ -308,7 +319,7 @@ function controlActionFor(input, provider, commandOptions = {}) {
     return codexShellControlAction(input, commandOptions);
   }
 
-  if (classifyTool(input?.tool_name) !== "read") {
+  if (classifyTool(input?.tool_name, provider) !== "read") {
     return null;
   }
   const target = provider === "kiro"
@@ -341,13 +352,18 @@ function codexShellControlAction(input, commandOptions) {
   return null;
 }
 
-function codexInspectionAction(input, commandOptions) {
+function codexInspectionAction(input, state, commandOptions) {
   if (input?.tool_name !== "Bash") {
     return null;
   }
   const command = input?.tool_input?.command;
   const workspace = normalizeHookWorkspace(input?.cwd, commandOptions.platform);
   if (typeof command !== "string" || !workspace) {
+    return null;
+  }
+  // Pin inspection to the canonical workspace recorded by the last trusted
+  // lifecycle event; a per-call cwd may only narrow the readable tree.
+  if (state.workspace === null || !isSameOrDescendant(state.workspace, workspace, commandOptions.platform)) {
     return null;
   }
 
@@ -467,9 +483,11 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control or Codex inspection command."
-    : toolKind === "other"
-      ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
-      : "";
+    : toolKind === "network"
+      ? " Network tools can trigger side effects, so they are denied while the gate is pending unless COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 is set."
+      : toolKind === "other"
+        ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
+        : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run the exact Codex pass command for the active shell: ${formatCodexControlCommands("pass", commandOptions)}`,
@@ -560,6 +578,15 @@ function formatCodexInspectionInstructions(cwd, commandOptions = {}) {
   ].join("\n");
 }
 
+function isSameOrDescendant(root, candidate, platform = process.platform) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const relative = pathApi.relative(root, candidate);
+  if (relative === "") {
+    return true;
+  }
+  return !pathApi.isAbsolute(relative) && relative.split(pathApi.sep)[0] !== "..";
+}
+
 function normalizeHookWorkspace(value, platform = process.platform) {
   if (typeof value !== "string" || value.length === 0) {
     return null;
@@ -594,32 +621,49 @@ const WRITE_TOOLS = new Set([
   "writefile"
 ]);
 
-const READ_ONLY_TOOLS = new Set([
-  "file_search",
-  "filesearch",
-  "fs_read",
-  "fsread",
-  "glob",
-  "grep",
-  "list_directory",
-  "listdirectory",
-  "read",
-  "read_file",
-  "read_files",
-  "readfile",
-  "readfiles",
-  "ripgrep",
-  "search_files",
-  "searchfiles",
-  "semantic_search",
-  "semanticsearch",
-  "view_image",
-  "viewimage",
-  "web_fetch",
-  "web_search",
-  "webfetch",
-  "websearch"
-]);
+/*
+ * Native read-only tools, keyed by provider: a name proves nothing across
+ * hosts, and a Codex extension can present any plain tool name. Only verified
+ * built-in names are listed. Codex has no name-based entry at all: it has
+ * no native local reader on its hook path and inspects through the pinned
+ * bridge commands instead.
+ */
+const READ_ONLY_TOOLS_BY_PROVIDER = {
+  claude: new Set(["glob", "grep", "read"]),
+  cursor: new Set(["grep", "read"]),
+  kiro: new Set(["fs_read", "read"]),
+  // Intentionally empty: a Codex built-in such as view_image can be disabled
+  // by feature flag and its name taken over by an extension.
+  codex: new Set()
+};
+
+/*
+ * Host-side tools that cannot mutate the project, keyed by provider because a
+ * name proves nothing across hosts (an extension tool may reuse any name).
+ * Only verified canonical names are listed; other providers stay
+ * deny-by-default until their names are confirmed. Tools that delegate
+ * execution are deliberately absent: Skill runs `!command` preprocessing
+ * before the model sees it, and Agent/Task can create a git worktree before
+ * the subagent's first gated tool call.
+ */
+const HARNESS_TOOLS_BY_PROVIDER = {
+  claude: new Set([
+    "askuserquestion",
+    "ls",
+    "taskcreate",
+    "taskget",
+    "tasklist",
+    "taskupdate",
+    "todowrite"
+  ])
+};
+
+// Denied while pending by default: an HTTP request can have side effects.
+// Keyed by provider for the same reason as the read-only list; the opt-in
+// only ever covers a host's own built-in network tools.
+const NETWORK_TOOLS_BY_PROVIDER = {
+  claude: new Set(["webfetch", "websearch"])
+};
 
 const SHELL_TOOLS = new Set([
   "bash",
