@@ -34,7 +34,7 @@ test("compatible flow blocks writes until the exact pass command runs", () => {
   assert.equal(JSON.parse(blocked.stdout).hookSpecificOutput.permissionDecision, "deny");
 
   const readOnly = handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rg --files" } },
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rg --no-config --files" } },
     "compatible",
     fixture
   );
@@ -696,7 +696,8 @@ test("generated control commands execute the exact standalone markers", () => {
 test("shell policy is conservative", () => {
   const allowed = [
     "pwd",
-    "rg --files",
+    "rg --no-config --files",
+    "ripgrep --no-config needle README.md",
     "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv -- src/app.js",
     "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature --oneline",
     "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv --no-show-signature HEAD",
@@ -715,12 +716,30 @@ test("shell policy is conservative", () => {
     "sort --reverse --key 2,2 input.txt",
     "sort -tT input.txt",
     "sort -- --compress-program=filename",
+    "sort /R input.txt",
+    "sort /M 1024 input.txt",
+    "sort /L C input.txt",
+    "sort /REC 4096 input.txt",
     "find src -maxdepth 2 -type f",
     "Get-Content README.md"
   ];
   const denied = [
+    "./cat README.md",
+    "/tmp/cat README.md",
+    "./rg --no-config --files",
+    "'C:\\tools\\cat' README.md",
     "touch file",
     "cat source > target",
+    "rg --files",
+    "ripgrep needle .",
+    "rg -- --no-config",
+    "rg --no-config --pre=./scripts/mutate needle .",
+    "rg --no-config --pre ./scripts/mutate needle .",
+    "rg --no-config --search-zip needle archive.gz",
+    "rg --no-config -z needle archive.gz",
+    "rg --no-config -nz needle archive.gz",
+    "rg --no-config --hostname-bin=./scripts/hostname needle .",
+    "rg --no-config --hostname-bin ./scripts/hostname needle .",
     "rg --files | xargs rm",
     "find . -delete",
     "git checkout main",
@@ -772,6 +791,11 @@ test("shell policy is conservative", () => {
     "sort -o changed.txt input.txt",
     "sort -ochanged.txt input.txt",
     "sort /O sorted.txt input.txt",
+    "sort /OUTPUT sorted.txt input.txt",
+    "sort /out sorted.txt input.txt",
+    "sort /T . input.txt",
+    "sort /temporary . input.txt",
+    "sort /TEMP . input.txt",
     "sort -S 1K --compress-program=./scripts/mutate input.txt",
     "sort --compress-program ./scripts/mutate input.txt",
     "sort --compress-prog=./scripts/mutate input.txt -S 1K",
@@ -852,6 +876,99 @@ test("GNU sort helper execution is reachable but denied by the gate", t => {
   assert.equal(fs.existsSync(sentinel), false, "denied hook executed the helper");
 });
 
+test("path-qualified allowlist command names are denied before execution", t => {
+  if (process.platform === "win32") {
+    t.skip("POSIX executable fixture is unavailable on Windows");
+    return;
+  }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-local-command-"));
+  const helper = path.join(directory, "cat");
+  const sentinel = path.join(directory, "local-cat-ran");
+  fs.writeFileSync(
+    helper,
+    [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
+      'process.stdout.write("side effect\\n");'
+    ].join("\n")
+  );
+  fs.chmodSync(helper, 0o700);
+
+  const direct = spawnSync("./cat", ["README.md"], {
+    cwd: directory,
+    encoding: "utf8"
+  });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute project-local cat");
+  fs.unlinkSync(sentinel);
+
+  assert.equal(isReadOnlyShellCommand("./cat README.md"), false);
+  const denied = handleHook(
+    {
+      session_id: "path-qualified-shell",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "./cat README.md" }
+    },
+    "compatible",
+    createFixture()
+  );
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(fs.existsSync(sentinel), false, "denied hook executed project-local cat");
+});
+
+test("ripgrep config preprocessors are reachable but require no-config through the gate", t => {
+  if (spawnSync("rg", ["--version"], { encoding: "utf8" }).status !== 0) {
+    t.skip("ripgrep is unavailable");
+    return;
+  }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-rg-"));
+  const helper = path.join(directory, "preprocess.mjs");
+  const sentinel = path.join(directory, "preprocess-ran");
+  const config = path.join(directory, "ripgreprc");
+  const input = path.join(directory, "input.txt");
+  fs.writeFileSync(
+    helper,
+    [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
+      'process.stdout.write(fs.readFileSync(process.argv[2], "utf8"));'
+    ].join("\n")
+  );
+  fs.chmodSync(helper, 0o700);
+  fs.writeFileSync(config, `--pre=${helper}\n`);
+  fs.writeFileSync(input, "needle\n");
+
+  const env = { ...process.env, RIPGREP_CONFIG_PATH: config };
+  const unsafe = spawnSync("rg", ["needle", input], { encoding: "utf8", env });
+  assert.equal(unsafe.status, 0, unsafe.stderr);
+  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute configured preprocessor");
+  fs.unlinkSync(sentinel);
+
+  const guarded = spawnSync("rg", ["--no-config", "needle", input], { encoding: "utf8", env });
+  assert.equal(guarded.status, 0, guarded.stderr);
+  assert.equal(fs.existsSync(sentinel), false, "no-config did not suppress configured preprocessor");
+
+  assert.equal(isReadOnlyShellCommand("rg needle input.txt"), false);
+  assert.equal(isReadOnlyShellCommand("rg --no-config needle input.txt"), true);
+  const denied = handleHook(
+    {
+      session_id: "rg-config",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "rg needle input.txt" }
+    },
+    "compatible",
+    createFixture()
+  );
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(fs.existsSync(sentinel), false, "denied hook executed configured preprocessor");
+});
+
 test("pending PreToolUse allows ordinary sort and denies unsafe sort options", () => {
   const fixture = createFixture();
   const base = {
@@ -870,6 +987,9 @@ test("pending PreToolUse allows ordinary sort and denies unsafe sort options", (
     "sort --compress-program=./scripts/mutate input.txt",
     "sort --compress-program ./scripts/mutate input.txt",
     "sort --comp=./scripts/mutate input.txt",
+    "sort /t . input.txt",
+    "sort /TEMP . input.txt",
+    "sort /out sorted.txt input.txt",
     "sort -rochanged.txt input.txt",
     "sort -nT. input.txt",
     "sort --not-a-real-option input.txt"

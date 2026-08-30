@@ -135,11 +135,16 @@ export function isReadOnlyShellCommand(command) {
     return false;
   }
 
-  const executable = path.basename(tokens[0].replaceAll("\\", "/")).toLowerCase();
+  const executableToken = tokens[0];
+  if (executableToken.includes("/") || executableToken.includes("\\")) {
+    return false;
+  }
+
+  const executable = executableToken.toLowerCase();
   const args = tokens.slice(1);
 
   if (executable === "rg" || executable === "ripgrep") {
-    return !args.some(arg => arg === "--pre" || arg.startsWith("--pre="));
+    return isReadOnlyRipgrep(args);
   }
   if (executable === "find") {
     return !args.some(arg => FIND_MUTATING_FLAGS.some(flag => arg.startsWith(flag)));
@@ -525,7 +530,10 @@ function isReadOnlySort(args) {
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (/^\/o$/i.test(argument)) {
+    if (
+      matchesWindowsOptionPrefix(argument, "/output") ||
+      matchesWindowsOptionPrefix(argument, "/temporary")
+    ) {
       return false;
     }
     if (!optionsEnabled) {
@@ -584,6 +592,22 @@ function isReadOnlySort(args) {
   return true;
 }
 
+function isReadOnlyRipgrep(args) {
+  if (args[0] !== "--no-config") {
+    return false;
+  }
+
+  return !args.slice(1).some(arg =>
+    arg === "--pre" ||
+    arg.startsWith("--pre=") ||
+    arg === "--search-zip" ||
+    arg.startsWith("--search-zip=") ||
+    arg === "--hostname-bin" ||
+    arg.startsWith("--hostname-bin=") ||
+    /^-[^-]*z/.test(arg)
+  );
+}
+
 function parseSortShortOptions(argument) {
   for (let index = 1; index < argument.length; index += 1) {
     const option = argument[index];
@@ -604,6 +628,11 @@ function parseSortShortOptions(argument) {
 function matchesLongOptionPrefix(argument, option) {
   const candidate = argument.split("=", 1)[0];
   return candidate.length > 2 && candidate.startsWith("--") && option.startsWith(candidate);
+}
+
+function matchesWindowsOptionPrefix(argument, option) {
+  const candidate = argument.split(/[=:]/, 1)[0].toLowerCase();
+  return candidate.length >= 2 && candidate.startsWith("/") && option.startsWith(candidate);
 }
 
 const WRITE_TOOLS = new Set([
