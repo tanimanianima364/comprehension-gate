@@ -106,9 +106,16 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
+  const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
+
+  if (!isStartEvent && !isPromptEvent && event !== "posttooluse" && event !== "pretooluse") {
+    return blockingErrorResult(
+      `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}) and fails closed.`
+    );
+  }
 
   try {
-    if (event === "sessionstart" || (mode === "kiro" && event === "agentspawn")) {
+    if (isStartEvent) {
       const source = String(input?.source ?? "startup").toLowerCase();
       if (source === "compact") {
         const current = readGateState(provider, input, stateOptions);
@@ -146,10 +153,6 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    if (event !== "pretooluse") {
-      return allowResult();
-    }
-
     ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
     const action = controlActionFor(input, provider, commandOptions);
@@ -175,6 +178,11 @@ export function handleHook(input, mode = "compatible", options = {}) {
     );
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
+    if (isStartEvent) {
+      return blockingErrorResult(
+        `Comprehension Gate could not initialize for this session. ${detail} The gate remains pending; do not modify the project.`
+      );
+    }
     if (isPromptEvent) {
       return promptBlockResult(
         mode,
@@ -192,10 +200,11 @@ export function handleHook(input, mode = "compatible", options = {}) {
   }
 }
 
-export function malformedInputResult(mode = "compatible") {
-  return denyResult(
-    mode,
-    "Comprehension Gate could not parse hook input. Do not modify the project yet."
+// Unparseable stdin means the event type is unknown too, so no event-specific
+// payload can be trusted; a non-zero exit fails closed for every event.
+export function malformedInputResult() {
+  return blockingErrorResult(
+    "Comprehension Gate could not parse hook input and fails closed. Do not modify the project yet."
   );
 }
 
@@ -235,12 +244,16 @@ function detectProvider(mode, env) {
   return "claude";
 }
 
+// Exact, case-insensitive match only; stripping characters would let
+// "PreToolUse2" or "Pre-Tool-Use" pass as a known event.
 function normalizeEvent(event) {
-  return String(event ?? "").replaceAll(/[^a-z]/gi, "").toLowerCase();
+  return String(event ?? "").toLowerCase();
 }
 
 function classifyTool(toolName) {
-  const normalized = String(toolName ?? "").replaceAll(/[^a-z_]/gi, "").toLowerCase();
+  // Exact, case-insensitive match only. Stripping characters would let names
+  // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
+  const normalized = String(toolName ?? "").toLowerCase();
   if (READ_ONLY_TOOLS.has(normalized)) {
     return "read";
   }
@@ -440,6 +453,10 @@ function promptBlockResult(mode, reason) {
       stderr: ""
     };
   }
+  return { exitCode: 2, stdout: "", stderr: `${reason}\n` };
+}
+
+function blockingErrorResult(reason) {
   return { exitCode: 2, stdout: "", stderr: `${reason}\n` };
 }
 
@@ -652,6 +669,17 @@ export async function main() {
   process.exitCode = result.exitCode;
 }
 
-if (path.resolve(process.argv[1] ?? "") === path.resolve(SCRIPT_PATH)) {
+if (isMainModule(process.argv[1])) {
   await main();
+}
+
+function isMainModule(argument) {
+  if (typeof argument !== "string" || argument.length === 0) {
+    return false;
+  }
+  try {
+    return fs.realpathSync(argument) === fs.realpathSync(SCRIPT_PATH);
+  } catch {
+    return path.resolve(argument) === path.resolve(SCRIPT_PATH);
+  }
 }
