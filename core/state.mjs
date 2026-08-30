@@ -72,7 +72,7 @@ export function resetGate(provider, input, options = {}) {
     status: "pending",
     requestSequence,
     turnId: getTurnId(input),
-    promptDigest: getPromptDigest(input),
+    promptRecord: getPromptRecord(input, options),
     updatedAt: new Date().toISOString()
   };
 
@@ -92,20 +92,17 @@ export function resetGate(provider, input, options = {}) {
 export function ensureGateState(provider, input, options = {}) {
   const current = readGateState(provider, input, options);
   if (current.ok) {
-    const stalePrompt = stalePromptFor(current.state, input, options);
-    if (stalePrompt !== null) {
-      return resetGate(provider, { ...input, prompt: stalePrompt }, options);
-    }
-    if (canAdoptTurn(current.state, input)) {
+    const state = reconcilePromptRecord(provider, input, current.state, options);
+    if (canAdoptTurn(state, input)) {
       const adopted = {
-        ...current.state,
+        ...state,
         turnId: getTurnId(input),
         updatedAt: new Date().toISOString()
       };
       writeGateState(provider, input, adopted, options);
       return adopted;
     }
-    return current.state;
+    return state;
   }
   if (current.reason === "missing") {
     return resetGate(provider, input, options);
@@ -148,14 +145,20 @@ export function armGateControl(provider, input, action, options = {}) {
     toolUseId: getToolUseId(input),
     requestSequence: current.requestSequence
   };
-  writeJsonAtomically(armedControlPath(provider, input, options), armed, options);
+  writeJsonAtomically(armedControlPath(provider, input, action, options), armed, options);
   return current;
 }
 
 export function completeGateControl(provider, input, action, options = {}) {
   assertControlAction(action);
   const current = requireCurrentState(provider, input, options);
-  if (!matchesArmedControl(readArmedControl(provider, input, options), current, input, action)) {
+  const armedPath = armedControlPath(provider, input, action, options);
+  if (SATISFIED.has(current.status)) {
+    // First completion wins; a parallel control that also succeeded is a no-op.
+    safeUnlink(options.fs ?? fs, armedPath);
+    return current;
+  }
+  if (!matchesArmedControl(readArmedControl(armedPath, options), current, input, action)) {
     throw new GateStateError("Control command was not armed for this tool use.");
   }
 
@@ -167,15 +170,16 @@ export function completeGateControl(provider, input, action, options = {}) {
     updatedAt: new Date().toISOString()
   };
   writeGateState(provider, input, state, options);
-  removeArmedControls(provider, input, options);
+  safeUnlink(options.fs ?? fs, armedPath);
   return state;
 }
 
 export function clearGateControl(provider, input, action, options = {}) {
   assertControlAction(action);
   const current = requireCurrentState(provider, input, options);
-  if (matchesArmedControl(readArmedControl(provider, input, options), current, input, action)) {
-    safeUnlink(options.fs ?? fs, armedControlPath(provider, input, options));
+  const armedPath = armedControlPath(provider, input, action, options);
+  if (matchesArmedControl(readArmedControl(armedPath, options), current, input, action)) {
+    safeUnlink(options.fs ?? fs, armedPath);
   }
   return current;
 }
@@ -199,17 +203,22 @@ function writeGateState(provider, input, state, options) {
   writeJsonAtomically(stateFilePath(provider, input, options), state, options);
 }
 
-function armedControlPath(provider, input, options) {
-  const toolUseDigest = createHash("sha256")
-    .update(getToolUseId(input) ?? "")
-    .digest("hex");
-  return `${stateFilePath(provider, input, options)}.armed.${toolUseDigest}`;
+/*
+ * One record per tool use. Hosts that omit tool_use_id fall back to one
+ * record per action, so distinct actions still cannot clobber each other and
+ * identical actions write identical records.
+ */
+function armedControlPath(provider, input, action, options) {
+  const toolUseId = getToolUseId(input);
+  const key = toolUseId === null ? `action:${action}` : `tool-use:${toolUseId}`;
+  const keyDigest = createHash("sha256").update(key).digest("hex");
+  return `${stateFilePath(provider, input, options)}.armed.${keyDigest}`;
 }
 
-function readArmedControl(provider, input, options) {
+function readArmedControl(armedPath, options) {
   const filesystem = options.fs ?? fs;
   try {
-    return JSON.parse(filesystem.readFileSync(armedControlPath(provider, input, options), "utf8"));
+    return JSON.parse(filesystem.readFileSync(armedPath, "utf8"));
   } catch {
     return null;
   }
@@ -328,29 +337,42 @@ function canAdoptTurn(state, input) {
 
 /*
  * Hosts without a turn id (Claude Code) rely on the prompt hook to reset the
- * gate. If that hook was skipped or timed out, the transcript still shows the
- * newer human prompt; returning it lets the caller reset to pending for it.
+ * gate. Each reset records the identity of the latest human prompt record in
+ * the transcript; if the prompt hook was skipped or timed out, PreToolUse sees
+ * a newer record and resets to pending instead of inheriting the pass.
+ *
+ * Policy when the transcript cannot be judged (missing, unreadable, or no
+ * recognizable prompt record): a satisfied gate returns to pending, and the
+ * re-pass sticks until a record becomes judgeable again. A pending gate with
+ * no record adopts the first record it can see.
  */
-function stalePromptFor(state, input, options) {
-  if (state.turnId !== null || typeof state.promptDigest !== "string") {
-    return null;
+function reconcilePromptRecord(provider, input, state, options) {
+  if (state.turnId !== null || typeof input?.transcript_path !== "string" || input.transcript_path === "") {
+    return state;
   }
+  const record = latestHumanPrompt(input.transcript_path, options.fs ?? fs);
+  if (record === state.promptRecord) {
+    return state;
+  }
+  if (record === null) {
+    return SATISFIED.has(state.status) ? resetGate(provider, input, options) : state;
+  }
+  if (state.promptRecord === null) {
+    if (!SATISFIED.has(state.status)) {
+      const adopted = { ...state, promptRecord: record, updatedAt: new Date().toISOString() };
+      writeGateState(provider, input, adopted, options);
+      return adopted;
+    }
+    return state;
+  }
+  return resetGate(provider, input, options);
+}
+
+function getPromptRecord(input, options) {
   if (typeof input?.transcript_path !== "string" || input.transcript_path === "") {
     return null;
   }
-  const prompt = latestHumanPrompt(input.transcript_path, options.fs ?? fs);
-  if (prompt === null || digest(prompt) === state.promptDigest) {
-    return null;
-  }
-  return prompt;
-}
-
-function getPromptDigest(input) {
-  return typeof input?.prompt === "string" ? digest(input.prompt) : null;
-}
-
-function digest(value) {
-  return createHash("sha256").update(value).digest("hex");
+  return latestHumanPrompt(input.transcript_path, options.fs ?? fs);
 }
 
 function matchesCurrentTurn(state, input) {
@@ -368,7 +390,7 @@ function isValidState(state) {
     Number.isInteger(state.requestSequence) &&
     state.requestSequence > 0 &&
     (state.turnId === null || typeof state.turnId === "string") &&
-    (state.promptDigest === null || typeof state.promptDigest === "string")
+    (state.promptRecord === null || typeof state.promptRecord === "string")
   );
 }
 

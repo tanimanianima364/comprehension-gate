@@ -269,3 +269,109 @@ test("the transcript check is skipped when no transcript or turn id is available
   );
   assert.equal(allowed.stdout, "");
 });
+
+test("resubmitting the same prompt text starts a new turn that does not inherit the pass", () => {
+  const fixture = createFixture();
+  const transcript = writeTranscript(["続けて"]);
+  const session = { session_id: "same-text", transcript_path: transcript };
+
+  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "続けて" }, "compatible", fixture);
+  passGate(session, fixture);
+  assert.equal(
+    handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture).stdout,
+    ""
+  );
+
+  appendHumanPrompt(transcript, "続けて");
+  const stale = handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    "compatible",
+    fixture
+  );
+  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("a satisfied gate whose transcript can no longer be judged returns to pending but can pass again", () => {
+  const fixture = createFixture();
+  const transcript = writeTranscript(["first request"]);
+  const session = { session_id: "unjudgeable", transcript_path: transcript };
+  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
+  passGate(session, fixture);
+
+  fs.writeFileSync(transcript, "not json\n");
+  const denied = handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    "compatible",
+    fixture
+  );
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+
+  passGate(session, fixture);
+  const allowed = handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    "compatible",
+    fixture
+  );
+  assert.equal(allowed.stdout, "", "with no judgeable transcript the re-pass must stick");
+});
+
+test("a second concurrent control completion is an idempotent no-op after the first passes", () => {
+  const fixture = createFixture();
+  const session = { session_id: "double-complete" };
+  handleHook({ ...session, hook_event_name: "SessionStart" }, "compatible", fixture);
+  const control = { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: controlTarget("pass") } };
+  handleHook({ ...session, ...control, tool_use_id: "a" }, "compatible", fixture);
+  handleHook({ ...session, ...control, tool_use_id: "b" }, "compatible", fixture);
+
+  const post = id => handleHook(
+    {
+      ...session,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: id,
+      tool_input: { file_path: controlTarget("pass") },
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
+    },
+    "compatible",
+    fixture
+  );
+  assert.equal(post("a").stdout, "");
+  const second = post("b");
+  assert.equal(second.stdout, "", `second completion must not report a pending gate: ${second.stdout}`);
+  assert.equal(
+    handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture).stdout,
+    ""
+  );
+});
+
+test("controls armed without a tool_use_id are keyed by action so different actions cannot clobber each other", () => {
+  const fixture = createFixture();
+  const session = { session_id: "no-tool-use-id" };
+  handleHook({ ...session, hook_event_name: "SessionStart" }, "compatible", fixture);
+  handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: controlTarget("pass") } },
+    "compatible",
+    fixture
+  );
+  handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: controlTarget("bypass-low") } },
+    "compatible",
+    fixture
+  );
+  const completed = handleHook(
+    {
+      ...session,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: controlTarget("pass") },
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
+    },
+    "compatible",
+    fixture
+  );
+  assert.equal(completed.stdout, "", completed.stdout);
+  assert.equal(
+    handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture).stdout,
+    ""
+  );
+});

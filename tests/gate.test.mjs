@@ -619,9 +619,13 @@ test("provider result parsing rejects missing markers and explicit failures", ()
   );
 });
 
-test("malformed hook input fails closed", () => {
-  assert.equal(JSON.parse(malformedInputResult("compatible").stdout).hookSpecificOutput.permissionDecision, "deny");
-  assert.equal(malformedInputResult("kiro").exitCode, 2);
+test("malformed hook input fails closed with a non-zero exit for every mode", () => {
+  for (const mode of ["compatible", "cursor", "kiro"]) {
+    const result = malformedInputResult(mode);
+    assert.equal(result.exitCode, 2, mode);
+    assert.equal(result.stdout, "", `${mode}: no event-specific payload can be trusted`);
+    assert.match(result.stderr, /could not parse hook input/);
+  }
 });
 
 test("a failed prompt reset blocks submission and invalidates an earlier pass", () => {

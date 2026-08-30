@@ -200,10 +200,11 @@ export function handleHook(input, mode = "compatible", options = {}) {
   }
 }
 
-export function malformedInputResult(mode = "compatible") {
-  return denyResult(
-    mode,
-    "Comprehension Gate could not parse hook input. Do not modify the project yet."
+// Unparseable stdin means the event type is unknown too, so no event-specific
+// payload can be trusted; a non-zero exit fails closed for every event.
+export function malformedInputResult() {
+  return blockingErrorResult(
+    "Comprehension Gate could not parse hook input and fails closed. Do not modify the project yet."
   );
 }
 
