@@ -1,7 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const INSPECTION_ACTIONS = new Set(["inspect-read", "inspect-search"]);
+// Data values each action takes after the encoded workspace argument; the
+// single source of truth for both the action set and its arity.
+const INSPECTION_VALUE_COUNTS = new Map([
+  ["inspect-read", 1],
+  ["inspect-search", 2]
+]);
+
+export const INSPECTION_ACTIONS = new Set(INSPECTION_VALUE_COUNTS.keys());
+
+export function inspectionValueCount(action) {
+  const count = INSPECTION_VALUE_COUNTS.get(action);
+  if (count === undefined) {
+    throw new Error(`Unknown inspection action: ${action}`);
+  }
+  return count;
+}
 
 const READ_LIMIT = 256 * 1024;
 const SEARCH_PATTERN_LIMIT = 256;
@@ -45,7 +60,7 @@ export function runInspection(action, encodedArguments, output = process.stdout)
   if (!INSPECTION_ACTIONS.has(action)) {
     throw new Error(`Unknown inspection action: ${action}`);
   }
-  const expectedArity = action === "inspect-read" ? 2 : 3;
+  const expectedArity = inspectionValueCount(action) + 1;
   if (!Array.isArray(encodedArguments) || encodedArguments.length !== expectedArity) {
     throw new Error(`${action} expects ${expectedArity} encoded arguments.`);
   }

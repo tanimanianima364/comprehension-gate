@@ -9,9 +9,14 @@ import {
   checkGate,
   completeGateControl,
   readGateState,
-  resetGate,
-  satisfyGate
+  resetGate
 } from "../core/state.mjs";
+
+function satisfyGate(provider, input, action, fixture) {
+  const control = { ...input, tool_use_id: `satisfy-${action}` };
+  armGateControl(provider, control, action, fixture);
+  return completeGateControl(provider, control, action, fixture);
+}
 
 test("gate resets, passes, and resets again for a new turn", () => {
   const fixture = createFixture();
