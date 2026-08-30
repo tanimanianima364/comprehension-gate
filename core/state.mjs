@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { latestHumanPrompt } from "./transcript.mjs";
 
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 const SATISFIED = new Set(["passed", "bypassed-low"]);
 const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 
@@ -73,6 +73,7 @@ export function resetGate(provider, input, options = {}) {
     requestSequence,
     turnId: getTurnId(input),
     promptRecord: getPromptRecord(input, options),
+    workspace: getWorkspace(input),
     updatedAt: new Date().toISOString()
   };
 
@@ -300,6 +301,11 @@ function getTurnId(input) {
     : null;
 }
 
+// Host-supplied cwd at the last reset; Codex inspection must run from here.
+function getWorkspace(input) {
+  return typeof input?.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+}
+
 function getToolUseId(input) {
   const toolUseId = input?.tool_use_id;
   return typeof toolUseId === "string" && toolUseId !== ""
@@ -408,7 +414,8 @@ function isValidState(state) {
     Number.isInteger(state.requestSequence) &&
     state.requestSequence > 0 &&
     (state.turnId === null || typeof state.turnId === "string") &&
-    (state.promptRecord === null || typeof state.promptRecord === "string")
+    (state.promptRecord === null || typeof state.promptRecord === "string") &&
+    (state.workspace === null || typeof state.workspace === "string")
   );
 }
 

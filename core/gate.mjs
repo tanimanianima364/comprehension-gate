@@ -153,14 +153,14 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    ensureGateState(provider, input, stateOptions);
+    const state = ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
     }
-    if (provider === "codex" && codexInspectionAction(input, commandOptions)) {
+    if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
       return allowResult();
     }
     if (toolKind === "read") {
@@ -341,13 +341,18 @@ function codexShellControlAction(input, commandOptions) {
   return null;
 }
 
-function codexInspectionAction(input, commandOptions) {
+function codexInspectionAction(input, state, commandOptions) {
   if (input?.tool_name !== "Bash") {
     return null;
   }
   const command = input?.tool_input?.command;
   const workspace = normalizeHookWorkspace(input?.cwd, commandOptions.platform);
   if (typeof command !== "string" || !workspace) {
+    return null;
+  }
+  // Pin inspection to the cwd recorded at the last reset so a per-call cwd
+  // cannot widen the readable tree beyond the session's workspace.
+  if (state.workspace !== null && state.workspace !== input.cwd) {
     return null;
   }
 
