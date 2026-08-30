@@ -11,6 +11,7 @@ import {
   buildPinnedEntrypointCommand,
   buildPinnedEntrypointCommands
 } from "../core/command.mjs";
+import { handleHook, inspectionCommands } from "../core/gate.mjs";
 import { readGateState } from "../core/state.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -296,6 +297,134 @@ test("pinned controls execute through native Windows shell families", t => {
       }
       assert.equal(result.status, 0, `${action}/${shell}: ${result.stderr ?? ""}${result.error ?? ""}`);
       assert.equal(result.stdout.replaceAll("\r\n", "\n"), marker, `${action}/${shell}`);
+    }
+  }
+});
+
+test("pinned inspections execute through native Windows shell families", t => {
+  const nativeWindows = process.platform === "win32";
+  const wslWindows = process.platform === "linux" && fs.existsSync("/mnt/c/Windows/System32/cmd.exe");
+  if (!nativeWindows && !wslWindows) {
+    t.skip("native Windows inspection fixtures are unavailable");
+    return;
+  }
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-win-inspect-"));
+  fs.mkdirSync(path.join(workspace, "src"));
+  fs.writeFileSync(path.join(workspace, "src", "auth.js"), "const mode = 'rotation';\r\n");
+  const runtime = nativeWindows
+    ? process.execPath
+    : firstOutputLine(spawnSync("cmd.exe", ["/d", "/c", "where node"], { encoding: "utf8" }));
+  const entrypoint = nativeWindows
+    ? path.join(root, "core", "gate.mjs")
+    : firstOutputLine(spawnSync("wslpath", ["-w", path.join(root, "core", "gate.mjs")], { encoding: "utf8" }));
+  const windowsWorkspace = nativeWindows
+    ? workspace
+    : firstOutputLine(spawnSync("wslpath", ["-w", workspace], { encoding: "utf8" }));
+  const bridgeRuntime = nativeWindows
+    ? runtime
+    : firstOutputLine(spawnSync("wslpath", ["-u", runtime], { encoding: "utf8" }));
+  assert.ok(runtime && entrypoint && windowsWorkspace && bridgeRuntime);
+  const executors = {
+    powershell(command) {
+      return spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", command],
+        { encoding: "utf8" }
+      );
+    },
+    cmd(command) {
+      const source = [
+        "const { spawnSync } = require('node:child_process');",
+        `const command = ${JSON.stringify(command)};`,
+        "const result = spawnSync('cmd.exe', ['/d', '/c', command], { encoding: 'utf8' });",
+        "process.stdout.write(JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr, error: result.error ? String(result.error) : '' }));"
+      ].join("\n");
+      const bridge = spawnSync(bridgeRuntime, ["-e", source], { encoding: "utf8" });
+      return bridge.status === 0 ? JSON.parse(bridge.stdout) : bridge;
+    },
+    posix(command) {
+      const candidates = (nativeWindows
+        ? [
+            String.raw`C:\Program Files\Git\bin\bash.exe`,
+            String.raw`C:\Program Files\Git\usr\bin\sh.exe`
+          ]
+        : [
+            "/mnt/c/Program Files/Git/bin/bash.exe",
+            "/mnt/c/Program Files/Git/usr/bin/sh.exe"
+          ]).filter(candidate => fs.existsSync(candidate));
+      if (candidates.length === 0) {
+        t.diagnostic("Git Bash/Sh unavailable; POSIX-on-Windows inspection skipped");
+        return null;
+      }
+      for (const executable of candidates) {
+        const result = spawnSync(executable, ["-lc", command], { encoding: "utf8" });
+        assert.equal(result.status, 0, `${executable}: ${result.stderr}`);
+      }
+      return spawnSync(candidates[0], ["-lc", command], { encoding: "utf8" });
+    }
+  };
+  const cases = [
+    ["inspect-read", ["src/auth.js"], /mode = 'rotation'/],
+    ["inspect-search", ["rotation", "."], /src\/auth\.js:1/]
+  ];
+  const fixture = {
+    env: {
+      ...process.env,
+      PLUGIN_ROOT: entrypoint,
+      COMPREHENSION_GATE_STATE_DIR: fs.mkdtempSync(
+        path.join(os.tmpdir(), "comprehension-gate-win-inspect-state-")
+      )
+    },
+    platform: "win32",
+    runtime,
+    entrypoint
+  };
+  const base = {
+    session_id: "windows-inspection-hook",
+    turn_id: "turn-1",
+    cwd: windowsWorkspace
+  };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
+  for (const [action, values, expected] of cases) {
+    for (const { shell, command } of inspectionCommands(action, values, windowsWorkspace, {
+      platform: "win32",
+      runtime,
+      entrypoint
+    })) {
+      const stateBefore = readGateState("codex", base, fixture);
+      const pre = handleHook(
+        {
+          ...base,
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_input: { command }
+        },
+        "compatible",
+        fixture
+      );
+      assert.equal(pre.stdout, "", `${action}/${shell}: hook rejected generated command`);
+      const result = executors[shell](command);
+      if (result === null) {
+        continue;
+      }
+      assert.equal(result.status, 0, `${action}/${shell}: ${result.stderr ?? ""}${result.error ?? ""}`);
+      assert.match(result.stdout.replaceAll("\r\n", "\n"), expected, `${action}/${shell}`);
+      handleHook(
+        {
+          ...base,
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command },
+          tool_response: { exit_code: result.status, output: result.stdout }
+        },
+        "compatible",
+        fixture
+      );
+      assert.deepEqual(
+        readGateState("codex", base, fixture).state,
+        stateBefore.state,
+        `${action}/${shell}: inspection changed gate state`
+      );
     }
   }
 });

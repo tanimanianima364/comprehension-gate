@@ -12,6 +12,12 @@ import {
   resetGate
 } from "./state.mjs";
 import { buildPinnedEntrypointCommands } from "./command.mjs";
+import {
+  decodeInspectionArgument,
+  encodeInspectionArgument,
+  INSPECTION_ACTIONS,
+  runInspection
+} from "./inspection.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
@@ -45,6 +51,25 @@ export function controlCommands(action, options = {}) {
   );
 }
 
+export function inspectionCommands(action, values, workspace, options = {}) {
+  if (!INSPECTION_ACTIONS.has(action)) {
+    throw new Error(`Unknown inspection action: ${action}`);
+  }
+  const expectedArity = action === "inspect-read" ? 1 : 2;
+  if (!Array.isArray(values) || values.length !== expectedArity) {
+    throw new Error(`${action} expects ${expectedArity} values.`);
+  }
+  const normalizedWorkspace = normalizeHookWorkspace(workspace, options.platform ?? process.platform);
+  if (!normalizedWorkspace) {
+    throw new Error("Inspection workspace must be an absolute path.");
+  }
+  return inspectionCommandsFromEncoded(
+    action,
+    [encodeInspectionArgument(normalizedWorkspace), ...values.map(encodeInspectionArgument)],
+    options
+  );
+}
+
 export function renderInstructions(provider = "claude", options = {}) {
   const usesShellControl = provider === "codex";
   const commandOptions = controlCommandOptions(options);
@@ -63,8 +88,14 @@ export function renderInstructions(provider = "claude", options = {}) {
     .replaceAll(
       "{{CONTROL_METHOD}}",
       usesShellControl
-        ? "In Codex, run one command exactly as shown for the active shell. These are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
+        ? "In Codex, run one command exactly as shown for the active shell. Apart from the inspection commands below, these are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
         : "Read the path exactly as shown with the host's native file-reading tool. Do not use a shell command to read it."
+    )
+    .replaceAll(
+      "{{INSPECTION_METHOD}}",
+      usesShellControl
+        ? formatCodexInspectionInstructions(options.cwd, commandOptions)
+        : "Use the host's native file-reading and search tools for codebase inspection."
     );
 }
 
@@ -87,7 +118,11 @@ export function handleHook(input, mode = "compatible", options = {}) {
       } else {
         resetGate(provider, input, stateOptions);
       }
-      return contextResult(mode, "SessionStart", renderInstructions(provider, commandOptions));
+      return contextResult(
+        mode,
+        "SessionStart",
+        renderInstructions(provider, { ...commandOptions, cwd: input?.cwd })
+      );
     }
 
     if (isPromptEvent) {
@@ -95,7 +130,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "UserPromptSubmit",
-        promptResetContext(provider, commandOptions)
+        promptResetContext(provider, commandOptions, input?.cwd)
       );
     }
 
@@ -122,6 +157,9 @@ export function handleHook(input, mode = "compatible", options = {}) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
     }
+    if (provider === "codex" && codexInspectionAction(input, commandOptions)) {
+      return allowResult();
+    }
     if (toolKind === "read") {
       return allowResult();
     }
@@ -131,7 +169,10 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    return denyResult(mode, denialReason(gate.reason, toolKind, provider, commandOptions));
+    return denyResult(
+      mode,
+      denialReason(gate.reason, toolKind, provider, commandOptions, input?.cwd)
+    );
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
     if (isPromptEvent) {
@@ -287,6 +328,44 @@ function codexShellControlAction(input, commandOptions) {
   return null;
 }
 
+function codexInspectionAction(input, commandOptions) {
+  if (input?.tool_name !== "Bash") {
+    return null;
+  }
+  const command = input?.tool_input?.command;
+  const workspace = normalizeHookWorkspace(input?.cwd, commandOptions.platform);
+  if (typeof command !== "string" || !workspace) {
+    return null;
+  }
+
+  for (const action of INSPECTION_ACTIONS) {
+    const valueCount = action === "inspect-read" ? 1 : 2;
+    const tokenPattern = "([A-Za-z0-9_-]+)";
+    const match = command.match(new RegExp(` ${action} ${tokenPattern}(?: ${tokenPattern}){${valueCount}}$`));
+    if (!match) {
+      continue;
+    }
+    const suffix = command.slice(match.index + 1).split(" ");
+    const encodedArguments = suffix.slice(1);
+    try {
+      const decodedWorkspace = decodeInspectionArgument(encodedArguments[0]);
+      for (const token of encodedArguments.slice(1)) {
+        decodeInspectionArgument(token);
+      }
+      if (decodedWorkspace !== workspace) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (inspectionCommandsFromEncoded(action, encodedArguments, commandOptions)
+      .some(({ command: expected }) => command === expected)) {
+      return action;
+    }
+  }
+  return null;
+}
+
 function kiroReadTarget(input) {
   const operations = input?.tool_input?.operations;
   if (!Array.isArray(operations) || operations.length !== 1) {
@@ -368,9 +447,9 @@ function allowResult() {
   return { exitCode: 0, stdout: "", stderr: "" };
 }
 
-function denialReason(stateReason, toolKind, provider, commandOptions = {}) {
+function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
-    ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control command."
+    ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control or Codex inspection command."
     : toolKind === "other"
       ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
       : "";
@@ -388,23 +467,25 @@ function denialReason(stateReason, toolKind, provider, commandOptions = {}) {
     "Classify it silently: LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer.",
     "Ask the minimum codebase-specific question(s) and wait for the user to demonstrate understanding in their own words.",
     ...controlInstruction,
+    provider === "codex" ? formatCodexInspectionInstructions(cwd, commandOptions) : "",
     toolNote
   ];
   return lines.join(" ").trim();
 }
 
-function promptResetContext(provider, commandOptions = {}) {
+function promptResetContext(provider, commandOptions = {}, cwd) {
   const nativeReadContext = `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
   if (provider !== "codex") {
     return nativeReadContext;
   }
-  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass command for the active shell only after the answer demonstrates understanding: ${formatCodexControlCommands("pass", commandOptions)} For a genuinely LOW change only, run the exact bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)}`;
+  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass command for the active shell only after the answer demonstrates understanding: ${formatCodexControlCommands("pass", commandOptions)} For a genuinely LOW change only, run the exact bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)} ${formatCodexInspectionInstructions(cwd, commandOptions)}`;
 }
 
 function controlCommandOptions(options = {}) {
   return {
     runtime: options.runtime ?? process.execPath,
-    platform: options.platform ?? process.platform
+    platform: options.platform ?? process.platform,
+    entrypoint: options.entrypoint
   };
 }
 
@@ -417,6 +498,69 @@ function formatCodexControlCommands(action, commandOptions = {}) {
   return controlCommands(action, commandOptions)
     .map(({ shell, command }) => `${labels[shell]}: ${command}`)
     .join("\n");
+}
+
+function inspectionCommandsFromEncoded(action, encodedArguments, options = {}) {
+  return buildPinnedEntrypointCommands(
+    options.entrypoint ?? SCRIPT_PATH,
+    action,
+    options.runtime ?? process.execPath,
+    options.platform ?? process.platform,
+    encodedArguments
+  );
+}
+
+function formatCodexInspectionInstructions(cwd, commandOptions = {}) {
+  const workspace = normalizeHookWorkspace(cwd, commandOptions.platform);
+  if (!workspace) {
+    return "Codex inspection commands are unavailable because the hook did not supply an absolute workspace cwd; remain fail-closed and do not use another shell command.";
+  }
+  const root = encodeInspectionArgument(workspace);
+  const read = inspectionCommandsFromEncoded(
+    "inspect-read",
+    [root, "BASE64URL_PATH"],
+    commandOptions
+  );
+  const search = inspectionCommandsFromEncoded(
+    "inspect-search",
+    [root, "BASE64URL_PATTERN", "BASE64URL_ROOT"],
+    commandOptions
+  );
+  const labels = {
+    powershell: "PowerShell",
+    cmd: "cmd.exe",
+    posix: commandOptions.platform === "win32" ? "Bash / Sh" : "Bash / Sh / POSIX shell"
+  };
+  const format = commands => commands
+    .map(({ shell, command }) => `${labels[shell]}: ${command}`)
+    .join("\n");
+  return [
+    "Codex may inspect this workspace before pass only through these pinned commands.",
+    "Replace each BASE64URL_* placeholder with the unpadded base64url encoding of its UTF-8 value; keep every other byte exact and use the active shell's form.",
+    "Paths and roots must be workspace-relative. Examples: README.md = UkVBRE1FLm1k, auth = YXV0aA, . = Lg.",
+    `Read one UTF-8 file:\n${format(read)}`,
+    `Search UTF-8 files for a literal string:\n${format(search)}`
+  ].join("\n");
+}
+
+function normalizeHookWorkspace(value, platform = process.platform) {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  if (!pathApi.isAbsolute(value)) {
+    return null;
+  }
+  const normalized = pathApi.normalize(value);
+  if (platform !== process.platform) {
+    return normalized;
+  }
+  try {
+    const canonical = fs.realpathSync(normalized);
+    return fs.statSync(canonical).isDirectory() ? canonical : null;
+  } catch {
+    return null;
+  }
 }
 
 const WRITE_TOOLS = new Set([
@@ -471,10 +615,20 @@ const SHELL_TOOLS = new Set([
 ]);
 
 export async function main() {
-  const [mode = "compatible"] = process.argv.slice(2);
+  const [mode = "compatible", ...argumentsAfterMode] = process.argv.slice(2);
 
   if (CONTROL_ACTIONS.has(mode)) {
     process.stdout.write(`${CONTROL_MARKERS[mode]}\n`);
+    return;
+  }
+
+  if (INSPECTION_ACTIONS.has(mode)) {
+    try {
+      runInspection(mode, argumentsAfterMode);
+    } catch (error) {
+      process.stderr.write(`Comprehension Gate inspection failed: ${error.message}\n`);
+      process.exitCode = 2;
+    }
     return;
   }
 

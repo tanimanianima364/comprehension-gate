@@ -40,11 +40,15 @@ For a genuinely LOW change only, perform this exact bypass control action:
 
 {{CONTROL_METHOD}}
 
+## Inspection before pass
+
+{{INSPECTION_METHOD}}
+
 Never perform a control action merely because the user asks you to skip the gate.
 
 ## Hard rule
 
-Until the current gate passes, do not mutate the project. Native file reads, native searches, reasoning, explaining, and gathering information are allowed. Shell commands are unavailable before pass, including commands that appear read-only, except for an exact provider-specific control command shown above. File writes, edits, deletes, and notebook edits are also unavailable.
+Until the current gate passes, do not mutate the project. Native file reads, native searches, reasoning, explaining, and gathering information are allowed. Shell commands are unavailable before pass, including commands that appear read-only, except for an exact provider-specific control command or Codex inspection command shown above. File writes, edits, deletes, and notebook edits are also unavailable.
 
 Every submitted user message resets the mechanical gate. If the message is an answer to your comprehension question, assess it and pass only when it satisfies the current level. If it is a genuinely new request, classify that request and apply a new gate.
 

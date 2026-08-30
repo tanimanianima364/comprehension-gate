@@ -24,9 +24,10 @@ export function buildPinnedEntrypointCommand(
   argument,
   runtime = process.execPath,
   platform = process.platform,
-  shell = defaultPinnedShell(platform)
+  shell = defaultPinnedShell(platform),
+  extraArguments = []
 ) {
-  validatePinnedEntrypointInput(entrypoint, argument, runtime, platform);
+  validatePinnedEntrypointInput(entrypoint, argument, runtime, platform, extraArguments);
   if (!pinnedShells(platform).includes(shell)) {
     throw new Error(`Unsupported pinned shell for ${platform}: ${shell}`);
   }
@@ -34,19 +35,28 @@ export function buildPinnedEntrypointCommand(
   const bootstrap = shell === "cmd"
     ? `${CMD_QUOTE}${ENTRYPOINT_BOOTSTRAP}${CMD_QUOTE}`
     : `"${ENTRYPOINT_BOOTSTRAP}"`;
-  return `${pinnedRuntimeInvocation(runtime, platform, shell)} -e ${bootstrap} ${encodedEntrypoint} ${argument}`;
+  const suffix = [encodedEntrypoint, argument, ...extraArguments].join(" ");
+  return `${pinnedRuntimeInvocation(runtime, platform, shell)} -e ${bootstrap} ${suffix}`;
 }
 
 export function buildPinnedEntrypointCommands(
   entrypoint,
   argument,
   runtime = process.execPath,
-  platform = process.platform
+  platform = process.platform,
+  extraArguments = []
 ) {
-  validatePinnedEntrypointInput(entrypoint, argument, runtime, platform);
+  validatePinnedEntrypointInput(entrypoint, argument, runtime, platform, extraArguments);
   return pinnedShells(platform).map(shell => ({
     shell,
-    command: buildPinnedEntrypointCommand(entrypoint, argument, runtime, platform, shell)
+    command: buildPinnedEntrypointCommand(
+      entrypoint,
+      argument,
+      runtime,
+      platform,
+      shell,
+      extraArguments
+    )
   }));
 }
 
@@ -58,7 +68,7 @@ export function adapterCommand(provider, root, platform = process.platform) {
   return buildEntrypointCommand(pathApi.join(root, "core", "gate.mjs"), provider);
 }
 
-function validatePinnedEntrypointInput(entrypoint, argument, runtime, platform) {
+function validatePinnedEntrypointInput(entrypoint, argument, runtime, platform, extraArguments = []) {
   if (typeof runtime !== "string" || runtime.length === 0) {
     throw new Error("Runtime must be a non-empty path.");
   }
@@ -71,6 +81,11 @@ function validatePinnedEntrypointInput(entrypoint, argument, runtime, platform) 
   }
   if (typeof argument !== "string" || !SAFE_ARGUMENT.test(argument)) {
     throw new Error("Command argument contains shell syntax.");
+  }
+  if (!Array.isArray(extraArguments) || extraArguments.some(value =>
+    typeof value !== "string" || !SAFE_ARGUMENT.test(value)
+  )) {
+    throw new Error("Extra command argument contains shell syntax.");
   }
 }
 
