@@ -89,7 +89,13 @@ export function resetGate(provider, input, options = {}) {
 
 export function ensureGateState(provider, input, options = {}) {
   const current = readGateState(provider, input, options);
-  return current.ok ? current.state : resetGate(provider, input, options);
+  if (current.ok) {
+    return current.state;
+  }
+  if (current.reason === "missing") {
+    return resetGate(provider, input, options);
+  }
+  throw new GateStateError(`Gate state is ${current.reason}.`);
 }
 
 export function satisfyGate(provider, input, action, options = {}) {

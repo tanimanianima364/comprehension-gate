@@ -3,27 +3,26 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "command": "__COMPREHENSION_GATE_COMMAND__",
         "timeout": 5
       }
     ],
     "beforeSubmitPrompt": [
       {
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "command": "__COMPREHENSION_GATE_COMMAND__",
         "timeout": 5
       }
     ],
     "preToolUse": [
       {
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
-        "matcher": "Shell|Write|Delete",
+        "command": "__COMPREHENSION_GATE_COMMAND__",
         "timeout": 5,
         "failClosed": true
       }
     ],
     "postToolUse": [
       {
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "command": "__COMPREHENSION_GATE_COMMAND__",
         "matcher": "Shell",
         "timeout": 5
       }

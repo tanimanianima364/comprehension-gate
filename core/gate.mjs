@@ -5,6 +5,7 @@ import {
   armGateControl,
   clearGateControl,
   completeGateControl,
+  ensureGateState,
   GateStateError,
   checkGate,
   readGateState,
@@ -81,8 +82,9 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
+    ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
-    if (toolKind === "other") {
+    if (toolKind === "read") {
       return allowResult();
     }
 
@@ -223,6 +225,9 @@ function normalizeEvent(event) {
 
 function classifyTool(toolName) {
   const normalized = String(toolName ?? "").replaceAll(/[^a-z_]/gi, "").toLowerCase();
+  if (READ_ONLY_TOOLS.has(normalized)) {
+    return "read";
+  }
   if (WRITE_TOOLS.has(normalized)) {
     return "write";
   }
@@ -356,16 +361,18 @@ function allowResult() {
 }
 
 function denialReason(stateReason, toolKind) {
-  const shellNote = toolKind === "shell"
+  const toolNote = toolKind === "shell"
     ? " Before the gate passes, use dedicated read/search tools or a conservatively recognized read-only shell command."
-    : "";
+    : toolKind === "other"
+      ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
+      : "";
   return [
     `Comprehension Gate is not satisfied for the current user turn (${stateReason}).`,
     "Classify it silently: LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer.",
     "Ask the minimum codebase-specific question(s) and wait for the user to demonstrate understanding in their own words.",
     `After mastery, run this exact standalone command: ${controlCommand("pass")}`,
     `For a genuinely LOW change only, run this exact standalone command: ${controlCommand("bypass-low")}`,
-    shellNote
+    toolNote
   ].join(" ").trim();
 }
 
@@ -489,6 +496,33 @@ const WRITE_TOOLS = new Set([
   "str_replace_based_edit_tool",
   "write",
   "writefile"
+]);
+
+const READ_ONLY_TOOLS = new Set([
+  "file_search",
+  "filesearch",
+  "fs_read",
+  "fsread",
+  "glob",
+  "grep",
+  "list_directory",
+  "listdirectory",
+  "read",
+  "read_file",
+  "read_files",
+  "readfile",
+  "readfiles",
+  "ripgrep",
+  "search_files",
+  "searchfiles",
+  "semantic_search",
+  "semanticsearch",
+  "view_image",
+  "viewimage",
+  "web_fetch",
+  "web_search",
+  "webfetch",
+  "websearch"
 ]);
 
 const SHELL_TOOLS = new Set([

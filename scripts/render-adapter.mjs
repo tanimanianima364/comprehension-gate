@@ -30,7 +30,7 @@ while (args.length > 0) {
 
 const templatePath = path.join(defaultRoot, "adapters", provider, "hooks.json");
 const template = JSON.parse(fs.readFileSync(templatePath, "utf8"));
-const rendered = replaceRoot(template, pluginRoot);
+const rendered = replaceCommand(template, adapterCommand(provider, pluginRoot));
 const serialized = `${JSON.stringify(rendered, null, 2)}\n`;
 
 if (!outputPath) {
@@ -45,19 +45,31 @@ if (!outputPath) {
   process.stdout.write(`Wrote ${provider} adapter to ${outputPath}\n`);
 }
 
-function replaceRoot(value, root) {
+function replaceCommand(value, command) {
   if (typeof value === "string") {
-    return value.replaceAll("__COMPREHENSION_GATE_ROOT__", root);
+    return value.replaceAll("__COMPREHENSION_GATE_COMMAND__", command);
   }
   if (Array.isArray(value)) {
-    return value.map(item => replaceRoot(item, root));
+    return value.map(item => replaceCommand(item, command));
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, replaceRoot(item, root)])
+      Object.entries(value).map(([key, item]) => [key, replaceCommand(item, command)])
     );
   }
   return value;
+}
+
+function adapterCommand(providerName, root) {
+  const entrypoint = path.join(root, "core", "gate.mjs");
+  return `node ${quoteShellArgument(entrypoint)} ${providerName}`;
+}
+
+function quoteShellArgument(value, platform = process.platform) {
+  if (platform === "win32") {
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function requiredValue(flag) {

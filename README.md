@@ -20,19 +20,21 @@ Kiro CLI 2.x uses a different embedded-hook format and is intentionally unsuppor
 ```text
 SessionStart -> inject shared instructions
 UserPromptSubmit -> state = pending
-PreToolUse(write/mutating shell)
-  pending -> deny
+PreToolUse(any observable local tool, including MCP)
+  known read-only tool -> allow
+  conservative read-only shell command -> allow
+  pending + anything else -> deny
   exact pass or bypass-low command -> arm and allow that one command
 PostToolUse(matching successful control command + expected marker)
   -> update session state
   satisfied -> let the host permission model decide
 ```
 
-State is stored outside the project and keyed by a SHA-256 digest of provider plus `session_id`. Codex `turn_id` is also checked when available. Writes use a temporary file and rename so parallel hook processes never observe partially written JSON. Set `COMPREHENSION_GATE_STATE_DIR` to override the state directory for tests or managed deployments.
+State is stored outside the project and keyed by a SHA-256 digest of provider plus `session_id`. Codex `turn_id` is also checked when available. If the first observed lifecycle event is `PreToolUse`, a missing state is initialized to pending before policy evaluation; invalid or unreadable state remains fail-closed. Writes use a temporary file and rename so parallel hook processes never observe partially written JSON. Set `COMPREHENSION_GATE_STATE_DIR` to override the state directory for tests or managed deployments.
 
-Shell handling is fail-closed before mastery: only a conservative allowlist of inspection commands is accepted. Use native Read/Search tools when an inspection command is rejected.
+Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools plus conservatively parsed read-only shell commands proceeds. Unknown tools and MCP tools are denied while pending, even when their names appear read-like, because the gate cannot verify arbitrary provider semantics. After pass, the hook stays silent and the host's normal permission model applies.
 
-The Kiro adapter matches both the short categories and the current 3.x canonical mutation tools (`fs_write`, `str_replace`, `delete_file`, `execute_bash`, and `control_bash_process`). It also accepts Kiro's documented `agentSpawn` input name for a configured `SessionStart` hook.
+The Kiro adapter uses the documented `*` matcher to cover built-in and MCP tools. It handles the configured `SessionStart` event and also accepts Kiro's documented CLI payload name, `agentSpawn`, for compatibility.
 
 ## Development use
 
@@ -63,7 +65,7 @@ node scripts/render-adapter.mjs kiro --output /project/.kiro/hooks/comprehension
 kiro-cli diagnostic
 ```
 
-The renderer refuses to overwrite an existing file unless `--force` is explicitly supplied. Prefer merging when a project already has hooks.
+The renderer shell-quotes the absolute entrypoint for the current platform and refuses to overwrite an existing file unless `--force` is explicitly supplied. Prefer merging when a project already has hooks.
 
 ## Verification
 
@@ -71,7 +73,7 @@ The renderer refuses to overwrite an existing file unless `--force` is explicitl
 npm test
 ```
 
-The tests cover state reset/pass/bypass, armed control-command completion, failed provider results, Codex turn isolation, strict control-command matching, conservative shell inspection, fail-closed prompt reset, Kiro 3.x canonical tools, and provider-specific output shapes.
+The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed control-command completion, failed provider results, Codex turn isolation, strict control-command matching, conservative shell inspection, MCP/unknown-tool denial across providers, executable adapter quoting with shell metacharacters, both Kiro start event forms, and provider-specific output shapes.
 
 ## Security boundary
 
@@ -81,5 +83,5 @@ Current primary references:
 
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Codex hooks](https://developers.openai.com/codex/hooks)
-- [Cursor third-party hooks](https://cursor.com/docs/reference/third-party-hooks)
+- [Cursor hooks](https://cursor.com/docs/hooks)
 - [Kiro hooks](https://kiro.dev/docs/hooks/)

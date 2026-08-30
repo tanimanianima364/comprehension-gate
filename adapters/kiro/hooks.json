@@ -6,7 +6,7 @@
       "trigger": "SessionStart",
       "action": {
         "type": "command",
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+        "command": "__COMPREHENSION_GATE_COMMAND__"
       },
       "timeout": 5,
       "enabled": true
@@ -16,7 +16,7 @@
       "trigger": "UserPromptSubmit",
       "action": {
         "type": "command",
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+        "command": "__COMPREHENSION_GATE_COMMAND__"
       },
       "timeout": 5,
       "enabled": true
@@ -24,10 +24,10 @@
     {
       "name": "comprehension-gate-pre-tool-use",
       "trigger": "PreToolUse",
-      "matcher": "write|shell|fs_write|str_replace|delete_file|execute_bash|execute_cmd|control_bash_process",
+      "matcher": "*",
       "action": {
         "type": "command",
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+        "command": "__COMPREHENSION_GATE_COMMAND__"
       },
       "timeout": 5,
       "enabled": true
@@ -38,7 +38,7 @@
       "matcher": "shell|execute_bash|execute_cmd",
       "action": {
         "type": "command",
-        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+        "command": "__COMPREHENSION_GATE_COMMAND__"
       },
       "timeout": 5,
       "enabled": true
