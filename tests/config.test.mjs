@@ -5,6 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  adapterCommand,
+  buildEntrypointCommand
+} from "../core/command.mjs";
 import { readGateState } from "../core/state.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -60,8 +64,95 @@ test("adapter renderer emits portable, placeholder-free JSON", () => {
     );
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /__COMPREHENSION_GATE_COMMAND__/);
-    assert.doesNotThrow(() => JSON.parse(result.stdout));
-    assert.match(result.stdout, /core[\\/]gate\.mjs/);
+    const config = JSON.parse(result.stdout);
+    const command = adapterCommandFromConfig(provider, config);
+    const parsed = parseEntrypointCommand(command);
+    assert.equal(parsed.entrypoint, path.join(root, "core", "gate.mjs"));
+    assert.equal(parsed.argument, provider);
+    assert.doesNotMatch(command, /core[\\/]gate\.mjs/);
+  }
+});
+
+test("Windows adapter and control paths are encoded outside shell syntax", () => {
+  const windowsRoot = String.raw`C:\dev\plugin-$HOME-$(whoami)-%TEMP%-&-|-^-!-spaces-'single'-"double"-\`tick\``;
+  const expectedEntrypoint = path.win32.join(windowsRoot, "core", "gate.mjs");
+
+  for (const provider of ["cursor", "kiro"]) {
+    const command = adapterCommand(provider, windowsRoot, "win32");
+    const parsed = parseEntrypointCommand(command);
+    assert.equal(parsed.entrypoint, expectedEntrypoint);
+    assert.equal(parsed.argument, provider);
+    assertShellPathIsOpaque(command, windowsRoot);
+  }
+
+  for (const action of ["pass", "bypass-low"]) {
+    const command = buildEntrypointCommand(expectedEntrypoint, action);
+    const parsed = parseEntrypointCommand(command);
+    assert.equal(parsed.entrypoint, expectedEntrypoint);
+    assert.equal(parsed.argument, action);
+    assertShellPathIsOpaque(command, windowsRoot);
+  }
+});
+
+test("entrypoint command builders reject unencoded shell arguments", () => {
+  assert.throws(() => buildEntrypointCommand("", "pass"), /non-empty/);
+  assert.throws(
+    () => buildEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"),
+    /shell syntax/
+  );
+  assert.throws(() => adapterCommand("unknown", "/plugin"), /Unsupported adapter/);
+});
+
+test("encoded adapter commands execute through native Windows shells", {
+  skip: process.platform !== "win32"
+}, t => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-win-"));
+  const specialRoot = path.join(
+    sandbox,
+    "plugin-%TEMP%-$HOME-$(Write-Output wrong)-!-^-&-spaces"
+  );
+  fs.mkdirSync(specialRoot);
+  fs.cpSync(path.join(root, "core"), path.join(specialRoot, "core"), {
+    recursive: true
+  });
+  const command = adapterCommand("cursor", specialRoot, "win32");
+  const batchPath = path.join(sandbox, "run-adapter.cmd");
+  fs.writeFileSync(batchPath, `@echo off\r\n${command}\r\n`);
+  const input = JSON.stringify({
+    conversation_id: "windows-shell",
+    hook_event_name: "sessionStart"
+  });
+  const shells = [
+    {
+      name: "cmd",
+      executable: process.env.ComSpec ?? "cmd.exe",
+      args: ["/d", "/c", batchPath],
+      probeArgs: ["/d", "/c", "exit 0"]
+    },
+    {
+      name: "PowerShell",
+      executable: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-Command", command],
+      probeArgs: ["-NoProfile", "-NonInteractive", "-Command", "exit 0"]
+    }
+  ];
+
+  for (const shell of shells) {
+    const available = spawnSync(shell.executable, shell.probeArgs);
+    if (available.error?.code === "ENOENT") {
+      t.diagnostic(`${shell.name} unavailable`);
+      continue;
+    }
+    const result = spawnSync(shell.executable, shell.args, {
+      encoding: "utf8",
+      input,
+      env: {
+        ...process.env,
+        COMPREHENSION_GATE_STATE_DIR: path.join(sandbox, `state-${shell.name}`)
+      }
+    });
+    assert.equal(result.status, 0, `${shell.name}: ${result.stderr}`);
+    assert.match(result.stdout, /Comprehension Gate/, shell.name);
   }
 });
 
@@ -159,6 +250,29 @@ test("Kiro adapter matches and blocks every documented 3.x mutation tool", () =>
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
+}
+
+function adapterCommandFromConfig(provider, config) {
+  return provider === "cursor"
+    ? config.hooks.sessionStart[0].command
+    : config.hooks.find(hook => hook.trigger === "SessionStart").action.command;
+}
+
+function parseEntrypointCommand(command) {
+  const match = command.match(/^node -e "([^"]+)" ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
+  assert.ok(match, command);
+  return {
+    bootstrap: match[1],
+    entrypoint: Buffer.from(match[2], "base64url").toString("utf8"),
+    argument: match[3]
+  };
+}
+
+function assertShellPathIsOpaque(command, rawPath) {
+  assert.equal(command.includes(rawPath), false);
+  for (const token of ["$HOME", "$(", "%TEMP%", "&", "|", "^", "!", "`"]) {
+    assert.equal(command.includes(token), false, token);
+  }
 }
 
 function runKiroHook(input, env) {

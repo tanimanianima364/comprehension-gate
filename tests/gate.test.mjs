@@ -679,12 +679,36 @@ test("command entrypoint consumes hook JSON over stdin", () => {
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.hookEventName, "SessionStart");
 });
 
+test("generated control commands execute the exact standalone markers", () => {
+  for (const [action, marker] of [
+    ["pass", "<!-- comprehension-gate:pass -->\n"],
+    ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
+  ]) {
+    const result = spawnSync(controlCommand(action), {
+      encoding: "utf8",
+      shell: process.platform === "win32" ? true : "/bin/sh"
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, marker);
+  }
+});
+
 test("shell policy is conservative", () => {
   const allowed = [
     "pwd",
     "rg --files",
-    "git status --short",
-    "git diff -- src/app.js",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv -- src/app.js",
+    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature --oneline",
+    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv --no-show-signature HEAD",
+    "git --no-pager -c core.fsmonitor=false cat-file -p HEAD",
+    "git --no-pager -c core.fsmonitor=false grep needle -- src",
+    "git --no-pager -c core.fsmonitor=false rev-parse HEAD",
+    "git --no-pager -c core.fsmonitor=false tag --list",
+    "git --no-pager -c core.fsmonitor=false branch --show-current",
+    "git --no-pager -c core.fsmonitor=false config --get user.name",
+    "git --no-pager -c core.fsmonitor=false remote -v",
+    "git --no-pager -c core.fsmonitor=false remote show -n origin",
+    "git --no-pager -c core.fsmonitor=false worktree list",
     "find src -maxdepth 2 -type f",
     "Get-Content README.md"
   ];
@@ -699,6 +723,43 @@ test("shell policy is conservative", () => {
     "git branch --set-upstream-to=origin/main",
     "git tag v1.0.0",
     "git diff --output=patch.txt",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --output=patch.txt",
+    "git status --short",
+    "git diff -- src/app.js",
+    "git --no-pager diff --no-ext-diff -- src/app.js",
+    "git --no-pager -c core.fsmonitor=true diff --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false diff --no-textconv -- src/app.js",
+    "git --no-pager -c core.fsmonitor=false diff --ext-diff --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --ext-diff",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --textconv",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff=false --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false diff --no-textconv=false --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false diff -- --no-ext-diff --no-textconv",
+    "git --paginate diff --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false log --oneline",
+    "git --no-pager -c core.fsmonitor=false show HEAD",
+    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --oneline",
+    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv HEAD",
+    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature --show-signature",
+    "git --no-pager -c core.fsmonitor=false show --show-signature --no-ext-diff --no-textconv --no-show-signature",
+    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature '--format=%G?'",
+    "git --no-pager -c core.fsmonitor=false cat-file --filters HEAD:README.md",
+    "git --no-pager -c core.fsmonitor=false cat-file --filt HEAD:README.md",
+    "git --no-pager -c core.fsmonitor=false cat-file --textconv HEAD:README.md",
+    "git --no-pager -c core.fsmonitor=false grep --textconv needle",
+    "git --no-pager -c core.fsmonitor=false grep -Osh needle",
+    "git --no-pager -c core.fsmonitor=false grep -nOcat needle",
+    "git --no-pager -c core.fsmonitor=false grep -inOsh needle",
+    "git --no-pager -c core.fsmonitor=false grep --open-files-in-pager=sh needle",
+    "git --no-pager -c core.fsmonitor=false grep --open=sh needle",
+    "git --no-pager -c core.fsmonitor=false tag --list -d",
+    "git --no-pager -c core.fsmonitor=false tag --list '--format=%(signature:grade)'",
+    "git --no-pager -c core.fsmonitor=false for-each-ref",
+    "git --no-pager -c core.fsmonitor=false branch new-branch",
+    "git --no-pager -c core.fsmonitor=false config --get user.name --unset user.name",
+    "git --no-pager -c core.fsmonitor=false remote show origin",
+    "git --no-pager -c core.fsmonitor=false remote show -- -n origin",
+    "git --no-pager -c core.fsmonitor=false worktree add ../other",
     "go env -w GOPATH=/tmp/go",
     "go list -mod=mod ./...",
     "sort --output sorted.txt input.txt",
@@ -717,6 +778,125 @@ test("shell policy is conservative", () => {
   }
 });
 
+test("guarded git diff suppresses configured textconv and fsmonitor processes", t => {
+  if (spawnSync("git", ["--version"], { encoding: "utf8" }).status !== 0) {
+    t.skip("git is unavailable");
+    return;
+  }
+
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-git-"));
+  const helper = path.join(repository, "textconv-helper.mjs");
+  const sentinel = path.join(repository, "textconv-ran");
+  const fsmonitorHelper = path.join(repository, "fsmonitor-helper.mjs");
+  const fsmonitorSentinel = path.join(repository, "fsmonitor-ran");
+  fs.writeFileSync(
+    helper,
+    [
+      'import fs from "node:fs";',
+      "const [sentinel, input] = process.argv.slice(2);",
+      'fs.writeFileSync(sentinel, "ran");',
+      'process.stdout.write(fs.readFileSync(input, "utf8"));'
+    ].join("\n")
+  );
+  fs.writeFileSync(
+    fsmonitorHelper,
+    [
+      'import fs from "node:fs";',
+      "const sentinel = process.argv[2];",
+      'fs.writeFileSync(sentinel, "ran");',
+      'process.stdout.write("0\\n");'
+    ].join("\n")
+  );
+  fs.writeFileSync(path.join(repository, ".gitattributes"), "*.txt diff=sideeffect\n");
+  fs.writeFileSync(path.join(repository, "sample.txt"), "before\n");
+
+  runGit(repository, ["init", "--quiet"]);
+  runGit(repository, ["config", "user.name", "Comprehension Gate Test"]);
+  runGit(repository, ["config", "user.email", "gate@example.invalid"]);
+  runGit(repository, [
+    "config",
+    "diff.sideeffect.textconv",
+    [process.execPath, helper, sentinel].map(quoteGitConfigArgument).join(" ")
+  ]);
+  runGit(repository, ["add", ".gitattributes", "sample.txt"]);
+  runGit(repository, ["commit", "--quiet", "-m", "fixture"]);
+  fs.writeFileSync(path.join(repository, "sample.txt"), "after\n");
+
+  const unsafe = "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --textconv";
+  assert.equal(isReadOnlyShellCommand(unsafe), false);
+  runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--textconv"]);
+  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute textconv");
+  fs.unlinkSync(sentinel);
+
+  runGit(repository, [
+    "config",
+    "core.fsmonitor",
+    [process.execPath, fsmonitorHelper, fsmonitorSentinel].map(quoteGitConfigArgument).join(" ")
+  ]);
+  const fsmonitorUnsafe = "git --no-pager diff --no-ext-diff --no-textconv";
+  assert.equal(isReadOnlyShellCommand(fsmonitorUnsafe), false);
+  runGit(repository, ["--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
+  assert.equal(fs.existsSync(fsmonitorSentinel), true, "fixture did not execute fsmonitor");
+  fs.unlinkSync(fsmonitorSentinel);
+
+  const guarded = "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv";
+  assert.equal(isReadOnlyShellCommand(guarded), true);
+  runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
+  assert.equal(fs.existsSync(sentinel), false, "guarded diff executed textconv");
+  assert.equal(fs.existsSync(fsmonitorSentinel), false, "guarded diff executed fsmonitor");
+
+  if (process.platform !== "win32") {
+    const pagerHelper = path.join(repository, "grep-pager.mjs");
+    const pagerSentinel = path.join(repository, "grep-pager-ran");
+    fs.writeFileSync(
+      pagerHelper,
+      [
+        "#!/usr/bin/env node",
+        'import fs from "node:fs";',
+        `fs.writeFileSync(${JSON.stringify(pagerSentinel)}, "ran");`
+      ].join("\n")
+    );
+    fs.chmodSync(pagerHelper, 0o700);
+    const pagerOption = `-nO${pagerHelper}`;
+    const pagerCommand = `git --no-pager -c core.fsmonitor=false grep ${pagerOption} after -- sample.txt`;
+    assert.equal(isReadOnlyShellCommand(pagerCommand), false);
+    runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "grep", pagerOption, "after", "--", "sample.txt"]);
+    assert.equal(fs.existsSync(pagerSentinel), true, "fixture did not execute grep pager");
+  }
+});
+
+test("pending PreToolUse permits guarded Git and denies helper-capable forms", () => {
+  const fixture = createFixture();
+  const base = { session_id: "git-pretool", hook_event_name: "PreToolUse", tool_name: "Bash" };
+  const guarded = handleHook(
+    {
+      ...base,
+      tool_input: {
+        command: "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv -- src/app.js"
+      }
+    },
+    "compatible",
+    fixture
+  );
+  assert.equal(guarded.stdout, "");
+
+  for (const command of [
+    "git --no-pager diff --no-ext-diff --no-textconv",
+    "git --no-pager -c core.fsmonitor=false grep -nOsh needle"
+  ]) {
+    const denied = handleHook(
+      { ...base, tool_input: { command } },
+      "compatible",
+      fixture
+    );
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command
+    );
+  }
+});
+
 test("known output and metadata mutation forms are denied through PreToolUse", () => {
   const fixture = createFixture();
   const base = { session_id: "shell-bypass", hook_event_name: "SessionStart" };
@@ -726,7 +906,18 @@ test("known output and metadata mutation forms are denied through PreToolUse", (
     "tree -o src/app.js .",
     "git branch --set-upstream-to=origin/main",
     "go list -mod=mod ./...",
-    "sort /O src/app.js input.txt"
+    "sort /O src/app.js input.txt",
+    "git diff --ext-diff",
+    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --textconv",
+    "git --no-pager -c core.fsmonitor=false log --ext-diff --no-ext-diff --no-textconv --no-show-signature -p",
+    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv --no-show-signature --ext-diff HEAD",
+    "git --no-pager -c core.fsmonitor=false cat-file --filters HEAD:README.md",
+    "git --no-pager -c core.fsmonitor=false cat-file --textconv HEAD:README.md",
+    "git --no-pager -c core.fsmonitor=false grep --textconv needle",
+    "git --no-pager -c core.fsmonitor=false grep --open-files-in-pager=sh needle",
+    "git --no-pager -c core.fsmonitor=false grep -nOsh needle",
+    "git status --short",
+    "git --no-pager -c core.fsmonitor=false remote show origin"
   ];
 
   for (const command of commands) {
@@ -756,6 +947,19 @@ function createFixture(extraEnv = {}) {
       ...extraEnv
     }
   };
+}
+
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+  return result;
+}
+
+function quoteGitConfigArgument(value) {
+  if (process.platform === "win32") {
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function assertDenied(result, mode, message) {

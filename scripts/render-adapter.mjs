@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { adapterCommand } from "../core/command.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const defaultRoot = path.resolve(scriptDirectory, "..");
@@ -58,18 +59,6 @@ function replaceCommand(value, command) {
     );
   }
   return value;
-}
-
-function adapterCommand(providerName, root) {
-  const entrypoint = path.join(root, "core", "gate.mjs");
-  return `node ${quoteShellArgument(entrypoint)} ${providerName}`;
-}
-
-function quoteShellArgument(value, platform = process.platform) {
-  if (platform === "win32") {
-    return `"${value.replaceAll('"', '\\"')}"`;
-  }
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function requiredValue(flag) {

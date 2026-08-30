@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildEntrypointCommand } from "./command.mjs";
 import {
   armGateControl,
   clearGateControl,
@@ -16,15 +17,11 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
 const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 
-export function controlCommand(action, platform = process.platform) {
+export function controlCommand(action) {
   if (!CONTROL_ACTIONS.has(action)) {
     throw new Error(`Unknown control action: ${action}`);
   }
-
-  if (platform === "win32") {
-    return `node "${SCRIPT_PATH.replaceAll('"', '\\"')}" ${action}`;
-  }
-  return `node ${quotePosix(SCRIPT_PATH)} ${action}`;
+  return buildEntrypointCommand(SCRIPT_PATH, action);
 }
 
 export function renderInstructions() {
@@ -439,24 +436,67 @@ function tokenizeConservative(command) {
 }
 
 function isReadOnlyGit(args) {
-  const subcommand = (args[0] ?? "").toLowerCase();
+  if (
+    args[0] !== "--no-pager" ||
+    args[1] !== "-c" ||
+    args[2] !== "core.fsmonitor=false"
+  ) {
+    return false;
+  }
+
+  const commandArgs = args.slice(3);
+  const subcommand = (commandArgs[0] ?? "").toLowerCase();
+  const subcommandArgs = commandArgs.slice(1);
   if (args.some(arg => arg === "--output" || arg.startsWith("--output="))) {
     return false;
+  }
+  if (GIT_DIFF_FAMILY.has(subcommand)) {
+    const pathspecSeparator = subcommandArgs.indexOf("--");
+    const optionArgs = pathspecSeparator === -1
+      ? subcommandArgs
+      : subcommandArgs.slice(0, pathspecSeparator);
+    const disablesExternalDiff = optionArgs.includes("--no-ext-diff");
+    const disablesTextconv = optionArgs.includes("--no-textconv");
+    const disablesSignature = subcommand === "diff" || optionArgs.includes("--no-show-signature");
+    const malformedDisable = subcommandArgs.some(arg =>
+      arg.startsWith("--no-ext-diff=") ||
+      arg.startsWith("--no-textconv=") ||
+      arg.startsWith("--no-show-signature=")
+    );
+    const enablesHelper = subcommandArgs.some(arg =>
+      matchesLongOptionPrefix(arg, "--ext-diff") ||
+      matchesLongOptionPrefix(arg, "--textconv") ||
+      matchesLongOptionPrefix(arg, "--show-signature") ||
+      arg.includes("%G")
+    );
+    return disablesExternalDiff && disablesTextconv && disablesSignature && !malformedDisable && !enablesHelper;
+  }
+  if (subcommand === "cat-file") {
+    return !subcommandArgs.some(arg =>
+      matchesLongOptionPrefix(arg, "--filters") ||
+      matchesLongOptionPrefix(arg, "--textconv")
+    );
+  }
+  if (subcommand === "grep") {
+    return !subcommandArgs.some(arg =>
+      matchesLongOptionPrefix(arg, "--textconv") ||
+      matchesLongOptionPrefix(arg, "--open-files-in-pager") ||
+      /^-[^-]*O/.test(arg)
+    );
   }
   if (GIT_READ_SUBCOMMANDS.has(subcommand)) {
     return true;
   }
   if (subcommand === "tag") {
-    const tagArgs = args.slice(1);
+    const tagArgs = subcommandArgs;
     if (tagArgs.length === 0) {
       return true;
     }
-    const hasListMode = tagArgs.includes("-l") || tagArgs.includes("--list");
-    const hasMutationFlag = tagArgs.some(arg => ["-a", "-d", "-f", "-s", "-u"].includes(arg));
-    return hasListMode && !hasMutationFlag;
+    const hasListMode = tagArgs[0] === "-l" || tagArgs[0] === "--list";
+    return hasListMode && tagArgs.slice(1).every(arg => !arg.startsWith("-"));
   }
   if (subcommand === "branch") {
-    const branchArgs = args.slice(1);
+    const branchArgs = subcommandArgs;
     return (
       branchArgs.length === 0 ||
       (branchArgs.length === 1 && branchArgs[0] === "--show-current")
@@ -465,23 +505,24 @@ function isReadOnlyGit(args) {
   if (subcommand === "config") {
     const allowed = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
     const mutating = new Set(["--add", "--edit", "-e", "--remove-section", "--rename-section", "--replace-all", "--unset", "--unset-all"]);
-    return args.slice(1).some(arg => allowed.has(arg)) && !args.some(arg => mutating.has(arg));
+    return subcommandArgs.some(arg => allowed.has(arg)) && !subcommandArgs.some(arg => mutating.has(arg));
   }
   if (subcommand === "remote") {
-    const operation = (args[1] ?? "").toLowerCase();
-    return operation === "" || operation === "-v" || ["get-url", "show"].includes(operation);
+    const operation = (subcommandArgs[0] ?? "").toLowerCase();
+    if (operation === "show") {
+      return subcommandArgs[1] === "-n";
+    }
+    return operation === "" || operation === "-v" || operation === "get-url";
   }
   if (subcommand === "worktree") {
-    return (args[1] ?? "").toLowerCase() === "list";
-  }
-  if (subcommand === "submodule") {
-    return (args[1] ?? "").toLowerCase() === "status";
+    return (subcommandArgs[0] ?? "").toLowerCase() === "list";
   }
   return false;
 }
 
-function quotePosix(value) {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+function matchesLongOptionPrefix(argument, option) {
+  const candidate = argument.split("=", 1)[0];
+  return candidate.length > 2 && candidate.startsWith("--") && option.startsWith(candidate);
 }
 
 const WRITE_TOOLS = new Set([
@@ -579,25 +620,19 @@ const SIMPLE_READ_COMMANDS = new Set([
 const FIND_MUTATING_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"];
 
 const GIT_READ_SUBCOMMANDS = new Set([
-  "blame",
-  "cat-file",
   "describe",
-  "diff",
-  "for-each-ref",
-  "grep",
-  "log",
   "ls-files",
   "ls-tree",
   "merge-base",
   "name-rev",
   "rev-list",
   "rev-parse",
-  "show",
-  "show-ref",
-  "status"
+  "show-ref"
 ]);
 
-async function main() {
+const GIT_DIFF_FAMILY = new Set(["diff", "log", "show"]);
+
+export async function main() {
   const [modeOrAction = "compatible"] = process.argv.slice(2);
   if (CONTROL_ACTIONS.has(modeOrAction)) {
     const marker = modeOrAction === "pass"

@@ -34,6 +34,8 @@ State is stored outside the project and keyed by a SHA-256 digest of provider pl
 
 Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools plus conservatively parsed read-only shell commands proceeds. Unknown tools and MCP tools are denied while pending, even when their names appear read-like, because the gate cannot verify arbitrary provider semantics. After pass, the hook stays silent and the host's normal permission model applies.
 
+Git inspection is deliberately narrower than normal interactive Git usage. Every allowed Git command must begin with `git --no-pager -c core.fsmonitor=false`. `diff`, `log`, and `show` additionally require both `--no-ext-diff` and `--no-textconv`; `log` and `show` also require `--no-show-signature`, and signature-verifying formats are denied. `cat-file` filter/textconv modes and `grep` pager/textconv modes are denied. `status` is denied while pending, and `remote show` requires `-n`. These constraints close the enumerated configured pager, diff/textconv/filter/signature, fsmonitor, and default `remote show` process paths; they do not turn Git into a sandbox.
+
 The Kiro adapter uses the documented `*` matcher to cover built-in and MCP tools. It handles the configured `SessionStart` event and also accepts Kiro's documented CLI payload name, `agentSpawn`, for compatibility.
 
 ## Development use
@@ -65,7 +67,7 @@ node scripts/render-adapter.mjs kiro --output /project/.kiro/hooks/comprehension
 kiro-cli diagnostic
 ```
 
-The renderer shell-quotes the absolute entrypoint for the current platform and refuses to overwrite an existing file unless `--force` is explicitly supplied. Prefer merging when a project already has hooks.
+The renderer encodes the absolute entrypoint as a base64url argument and uses a fixed Node bootstrap, so plugin-path bytes are never interpreted as POSIX, PowerShell, or `cmd.exe` syntax. It refuses to overwrite an existing file unless `--force` is explicitly supplied. Prefer merging when a project already has hooks.
 
 ## Verification
 
@@ -73,7 +75,7 @@ The renderer shell-quotes the absolute entrypoint for the current platform and r
 npm test
 ```
 
-The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed control-command completion, failed provider results, Codex turn isolation, strict control-command matching, conservative shell inspection, MCP/unknown-tool denial across providers, executable adapter quoting with shell metacharacters, both Kiro start event forms, and provider-specific output shapes.
+The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed control-command completion, failed provider results, Codex turn isolation, strict control-command matching, conservative shell inspection, configured Git helper suppression, MCP/unknown-tool denial across providers, encoded adapter execution with shell metacharacters, synthetic Windows path round trips, both Kiro start event forms, and provider-specific output shapes.
 
 ## Security boundary
 
