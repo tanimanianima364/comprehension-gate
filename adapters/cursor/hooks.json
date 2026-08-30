@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 5,
+        "failClosed": true
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 5
+      }
+    ]
+  }
+}

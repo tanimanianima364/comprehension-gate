@@ -1,0 +1,47 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "comprehension-gate-session-start",
+      "trigger": "SessionStart",
+      "action": {
+        "type": "command",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-user-prompt",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-pre-tool-use",
+      "trigger": "PreToolUse",
+      "matcher": "*",
+      "action": {
+        "type": "command",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-post-tool-use",
+      "trigger": "PostToolUse",
+      "matcher": "*",
+      "action": {
+        "type": "command",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      },
+      "timeout": 5,
+      "enabled": true
+    }
+  ]
+}

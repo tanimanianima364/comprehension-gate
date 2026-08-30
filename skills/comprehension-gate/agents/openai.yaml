@@ -1,0 +1,4 @@
+interface:
+  display_name: "Comprehension Gate"
+  short_description: "Check understanding before implementation"
+  default_prompt: "Run a comprehension check for the current implementation before coding."
