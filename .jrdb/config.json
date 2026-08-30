@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "currency": "JPY",
+  "default_budget": 1000,
+  "minimum_unit": 100,
+  "auto_capture_prompts": false,
+  "strict_no_hindsight": true,
+  "question_mark_policy": "neutral",
+  "idm_baselines": {
+    "turf": {
+      "new": null,
+      "maiden": 50,
+      "1win": 55,
+      "2win": 60,
+      "3win": 65,
+      "open": 70,
+      "g3": 73,
+      "g2": 76,
+      "g1": 80
+    },
+    "dirt": {
+      "new": null,
+      "maiden": 45,
+      "1win": 50,
+      "2win": 55,
+      "3win": 60,
+      "open": 65,
+      "g3": 68,
+      "g2": 72,
+      "g1": 76
+    },
+    "obstacle": {
+      "new": null,
+      "maiden": null,
+      "1win": null,
+      "2win": null,
+      "3win": null,
+      "open": null,
+      "g3": null,
+      "g2": null,
+      "g1": null
+    }
+  },
+  "participation": {
+    "pass_when_market_aligned_and_no_value": true,
+    "new_race_default_max": 500,
+    "upper_class_default_max": 500,
+    "clear_edge_max": 900,
+    "never_force_full_budget": true
+  },
+  "ticket_rules": {
+    "exacta_min_premium_ratio": 1.35,
+    "wide_for_value_place_candidate": true,
+    "trio_requires_three_supported_horses": true,
+    "max_exacta_lines_without_exception": 1
+  },
+  "paddock_scale_families": {
+    "east": [
+      "東京",
+      "中山"
+    ],
+    "west_local": [
+      "京都",
+      "阪神",
+      "中京",
+      "小倉",
+      "函館",
+      "札幌",
+      "福島",
+      "新潟"
+    ]
+  },
+  "odds_freshness": {
+    "stale_warning_minutes": 10,
+    "high_confidence_block_minutes": 20
+  },
+  "stake_matrix": {
+    "A_A": [
+      600,
+      900
+    ],
+    "A_B": [
+      400,
+      600
+    ],
+    "B_A": [
+      400,
+      600
+    ],
+    "B_B": [
+      300,
+      500
+    ],
+    "C_any": [
+      0,
+      300
+    ]
+  },
+  "two_year_old_debut": {
+    "default_max_budget": 500,
+    "high_confidence_requires_extra_info": true
+  },
+  "hypothesis_tracking": {
+    "min_races_before_rule_change": 30
+  },
+  "trend": {
+    "minimum_sample": 3,
+    "rolling_window_races": 12,
+    "distance_bucket_m": 400
+  },
+  "policy_v1": {
+    "tier_amounts": {
+      "SKIP": 0,
+      "SMALL": 400,
+      "NORMAL": 700,
+      "STRONG": 900
+    }
+  }
+}

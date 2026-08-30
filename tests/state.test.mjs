@@ -101,3 +101,28 @@ function createFixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-state-"));
   return { env: { COMPREHENSION_GATE_STATE_DIR: directory } };
 }
+
+test("concurrently armed controls do not clobber each other", () => {
+  const fixture = createFixture();
+  const turn = { session_id: "session-parallel", turn_id: "turn-1" };
+  resetGate("codex", turn, fixture);
+
+  armGateControl("codex", { ...turn, tool_use_id: "tool-1" }, "pass", fixture);
+  armGateControl("codex", { ...turn, tool_use_id: "tool-2" }, "bypass-low", fixture);
+
+  assert.equal(
+    completeGateControl("codex", { ...turn, tool_use_id: "tool-1" }, "pass", fixture).status,
+    "passed"
+  );
+});
+
+test("an armed control from an earlier request cannot complete after a reset", () => {
+  const fixture = createFixture();
+  const turn = { session_id: "session-stale-arm", tool_use_id: "tool-1" };
+  resetGate("claude", turn, fixture);
+  armGateControl("claude", turn, "pass", fixture);
+  resetGate("claude", turn, fixture);
+
+  assert.throws(() => completeGateControl("claude", turn, "pass", fixture), GateStateError);
+  assert.equal(checkGate("claude", turn, fixture).satisfied, false);
+});
