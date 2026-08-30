@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   decodeInspectionArgument,
   encodeInspectionArgument,
+  INSPECTION_ACTIONS,
+  inspectionValueCount,
   runInspection
 } from "../core/inspection.mjs";
 
@@ -86,3 +88,10 @@ function capture(action, values) {
   );
   return text;
 }
+
+test("inspectionValueCount fails fast on an unknown action", () => {
+  assert.throws(() => inspectionValueCount("inspect-typo"), /Unknown inspection action/);
+  assert.equal(inspectionValueCount("inspect-read"), 1);
+  assert.equal(inspectionValueCount("inspect-search"), 2);
+  assert.deepEqual([...INSPECTION_ACTIONS].sort(), ["inspect-read", "inspect-search"]);
+});
