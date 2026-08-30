@@ -130,6 +130,10 @@ export function malformedInputResult(mode = "compatible") {
 }
 
 export function isReadOnlyShellCommand(command) {
+  if (rawExecutableHasPathSeparator(command)) {
+    return false;
+  }
+
   const tokens = tokenizeConservative(command);
   if (!tokens || tokens.length === 0) {
     return false;
@@ -438,6 +442,36 @@ function tokenizeConservative(command) {
     tokens.push(token);
   }
   return tokens;
+}
+
+function rawExecutableHasPathSeparator(command) {
+  if (typeof command !== "string") {
+    return false;
+  }
+
+  let quote = null;
+  let started = false;
+  for (const character of command) {
+    if (!started && /\s/.test(character)) {
+      continue;
+    }
+    started = true;
+    if (!quote && /\s/.test(character)) {
+      break;
+    }
+    if (character === "'" || character === '"') {
+      if (quote === character) {
+        quote = null;
+      } else if (!quote) {
+        quote = character;
+      }
+      continue;
+    }
+    if (character === "/" || character === "\\") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isReadOnlyGit(args) {

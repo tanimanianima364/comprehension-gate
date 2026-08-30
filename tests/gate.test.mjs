@@ -728,6 +728,9 @@ test("shell policy is conservative", () => {
     "/tmp/cat README.md",
     "./rg --no-config --files",
     "'C:\\tools\\cat' README.md",
+    "\\cat README.md",
+    "c\\at README.md",
+    "\\rg --no-config --files",
     "touch file",
     "cat source > target",
     "rg --files",
@@ -904,18 +907,29 @@ test("path-qualified allowlist command names are denied before execution", t => 
   assert.equal(fs.existsSync(sentinel), true, "fixture did not execute project-local cat");
   fs.unlinkSync(sentinel);
 
-  assert.equal(isReadOnlyShellCommand("./cat README.md"), false);
-  const denied = handleHook(
-    {
-      session_id: "path-qualified-shell",
-      hook_event_name: "PreToolUse",
-      tool_name: "Bash",
-      tool_input: { command: "./cat README.md" }
-    },
-    "compatible",
-    createFixture()
-  );
-  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  for (const command of [
+    "./cat README.md",
+    "\\cat README.md",
+    "c\\at README.md",
+    "\\rg --no-config --files"
+  ]) {
+    assert.equal(isReadOnlyShellCommand(command), false, command);
+    const denied = handleHook(
+      {
+        session_id: "path-qualified-shell",
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command }
+      },
+      "compatible",
+      createFixture()
+    );
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command
+    );
+  }
   assert.equal(fs.existsSync(sentinel), false, "denied hook executed project-local cat");
 });
 
