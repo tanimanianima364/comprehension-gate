@@ -1,0 +1,16 @@
+{
+  "name": "comprehension-gate",
+  "owner": {
+    "name": "Comprehension Gate contributors"
+  },
+  "metadata": {
+    "description": "Marketplace for the Comprehension Gate plugin: a deterministic write gate that requires demonstrated understanding before meaningful code changes"
+  },
+  "plugins": [
+    {
+      "name": "comprehension-gate",
+      "source": "./",
+      "description": "Require demonstrated understanding before meaningful code changes"
+    }
+  ]
+}

@@ -45,11 +45,18 @@ The Kiro adapter uses the documented `*` matcher to cover built-in and MCP tools
 
 Requirements: Node.js 18 or newer.
 
-For Claude Code, install `learning-output-style` separately, then load this repository during development:
+For Claude Code, install `learning-output-style` separately, then install this plugin. The repository is its own marketplace:
 
 ```text
 /plugin install learning-output-style
 ```
+
+```bash
+claude plugin marketplace add /absolute/path/to/comprehension-gate   # or: tanimanianima364/comprehension-gate
+claude plugin install comprehension-gate@comprehension-gate
+```
+
+The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update comprehension-gate` followed by `claude plugin update comprehension-gate@comprehension-gate`. To load the working tree directly during development instead:
 
 ```bash
 claude --plugin-dir /absolute/path/to/comprehension-gate
