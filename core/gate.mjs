@@ -11,11 +11,16 @@ import {
   readGateState,
   resetGate
 } from "./state.mjs";
+import { buildPinnedEntrypointCommand } from "./command.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
 const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 const CONTROL_DIRECTORY = path.join(path.dirname(SCRIPT_PATH), "control");
+const CONTROL_MARKERS = {
+  pass: "<!-- comprehension-gate:pass -->",
+  "bypass-low": "<!-- comprehension-gate:bypass-low -->"
+};
 
 export function controlTarget(action) {
   if (!CONTROL_ACTIONS.has(action)) {
@@ -24,11 +29,36 @@ export function controlTarget(action) {
   return path.join(CONTROL_DIRECTORY, action);
 }
 
-export function renderInstructions() {
+export function controlCommand(action, options = {}) {
+  if (!CONTROL_ACTIONS.has(action)) {
+    throw new Error(`Unknown control action: ${action}`);
+  }
+  return buildPinnedEntrypointCommand(
+    SCRIPT_PATH,
+    action,
+    options.runtime ?? process.execPath,
+    options.platform ?? process.platform
+  );
+}
+
+export function renderInstructions(provider = "claude") {
+  const usesShellControl = provider === "codex";
   return fs
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
-    .replaceAll("{{PASS_COMMAND}}", controlTarget("pass"))
-    .replaceAll("{{BYPASS_COMMAND}}", controlTarget("bypass-low"));
+    .replaceAll(
+      "{{PASS_CONTROL}}",
+      usesShellControl ? controlCommand("pass") : controlTarget("pass")
+    )
+    .replaceAll(
+      "{{BYPASS_CONTROL}}",
+      usesShellControl ? controlCommand("bypass-low") : controlTarget("bypass-low")
+    )
+    .replaceAll(
+      "{{CONTROL_METHOD}}",
+      usesShellControl
+        ? "In Codex, run the command exactly as shown. It is the only shell command available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
+        : "Read the path exactly as shown with the host's native file-reading tool. Do not use a shell command to read it."
+    );
 }
 
 export function handleHook(input, mode = "compatible", options = {}) {
@@ -49,7 +79,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       } else {
         resetGate(provider, input, stateOptions);
       }
-      return contextResult(mode, "SessionStart", renderInstructions());
+      return contextResult(mode, "SessionStart", renderInstructions(provider));
     }
 
     if (isPromptEvent) {
@@ -57,12 +87,12 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "UserPromptSubmit",
-        "Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding."
+        promptResetContext(provider)
       );
     }
 
     if (event === "posttooluse") {
-      const action = controlActionFor(input);
+      const action = controlActionFor(input, provider);
       if (action) {
         if (controlTransitionSucceeded(input, provider, action)) {
           completeGateControl(provider, input, action, stateOptions);
@@ -79,7 +109,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
-    const action = controlActionFor(input);
+    const action = controlActionFor(input, provider);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
@@ -93,7 +123,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    return denyResult(mode, denialReason(gate.reason, toolKind));
+    return denyResult(mode, denialReason(gate.reason, toolKind, provider));
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
     if (isPromptEvent) {
@@ -137,10 +167,7 @@ export function controlTransitionSucceeded(input, provider, action) {
     return false;
   }
 
-  const marker = action === "pass"
-    ? "<!-- comprehension-gate:pass -->"
-    : "<!-- comprehension-gate:bypass-low -->";
-  return responseText(response).includes(marker);
+  return responseText(response).includes(CONTROL_MARKERS[action]);
 }
 
 function detectProvider(mode, env) {
@@ -214,11 +241,17 @@ function responseText(response) {
   }
 }
 
-function controlActionFor(input) {
+function controlActionFor(input, provider) {
+  if (provider === "codex") {
+    return codexShellControlAction(input);
+  }
+
   if (classifyTool(input?.tool_name) !== "read") {
     return null;
   }
-  const target = input?.tool_input?.file_path ?? input?.tool_input?.filePath ?? input?.tool_input?.path;
+  const target = provider === "kiro"
+    ? kiroReadTarget(input)
+    : input?.tool_input?.file_path ?? input?.tool_input?.filePath ?? input?.tool_input?.path;
   if (typeof target !== "string") {
     return null;
   }
@@ -228,6 +261,30 @@ function controlActionFor(input) {
     }
   }
   return null;
+}
+
+function codexShellControlAction(input) {
+  if (input?.tool_name !== "Bash") {
+    return null;
+  }
+  const command = input?.tool_input?.command;
+  if (typeof command !== "string") {
+    return null;
+  }
+  for (const action of CONTROL_ACTIONS) {
+    if (command === controlCommand(action)) {
+      return action;
+    }
+  }
+  return null;
+}
+
+function kiroReadTarget(input) {
+  const operations = input?.tool_input?.operations;
+  if (!Array.isArray(operations) || operations.length !== 1) {
+    return null;
+  }
+  return operations[0]?.path;
 }
 
 function contextResult(mode, eventName, context) {
@@ -303,20 +360,37 @@ function allowResult() {
   return { exitCode: 0, stdout: "", stderr: "" };
 }
 
-function denialReason(stateReason, toolKind) {
+function denialReason(stateReason, toolKind, provider) {
   const toolNote = toolKind === "shell"
-    ? " Shell commands are unavailable before the gate passes; use dedicated native read/search tools."
+    ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control command."
     : toolKind === "other"
       ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
       : "";
-  return [
+  const controlInstruction = provider === "codex"
+    ? [
+        `After mastery, run this exact Codex pass control command: ${controlCommand("pass")}`,
+        `For a genuinely LOW change only, run this exact Codex LOW bypass command: ${controlCommand("bypass-low")}`
+      ]
+    : [
+        `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
+        `For a genuinely LOW change only, read this exact control target with a native file-reading tool: ${controlTarget("bypass-low")}`
+      ];
+  const lines = [
     `Comprehension Gate is not satisfied for the current user turn (${stateReason}).`,
     "Classify it silently: LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer.",
     "Ask the minimum codebase-specific question(s) and wait for the user to demonstrate understanding in their own words.",
-    `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
-    `For a genuinely LOW change only, read this exact control target with a native file-reading tool: ${controlTarget("bypass-low")}`,
+    ...controlInstruction,
     toolNote
-  ].join(" ").trim();
+  ];
+  return lines.join(" ").trim();
+}
+
+function promptResetContext(provider) {
+  const nativeReadContext = `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
+  if (provider !== "codex") {
+    return nativeReadContext;
+  }
+  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass control command only after the answer demonstrates understanding: ${controlCommand("pass")} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low")}`;
 }
 
 const WRITE_TOOLS = new Set([
@@ -372,6 +446,11 @@ const SHELL_TOOLS = new Set([
 
 export async function main() {
   const [mode = "compatible"] = process.argv.slice(2);
+
+  if (CONTROL_ACTIONS.has(mode)) {
+    process.stdout.write(`${CONTROL_MARKERS[mode]}\n`);
+    return;
+  }
 
   let stdin = "";
   for await (const chunk of process.stdin) {

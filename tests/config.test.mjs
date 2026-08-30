@@ -7,7 +7,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   adapterCommand,
-  buildEntrypointCommand
+  buildEntrypointCommand,
+  buildPinnedEntrypointCommand
 } from "../core/command.mjs";
 import { readGateState } from "../core/state.mjs";
 
@@ -104,7 +105,74 @@ test("entrypoint command builders reject unencoded shell arguments", () => {
     () => buildEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"),
     /shell syntax/
   );
+  assert.throws(() => buildPinnedEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"), /shell syntax/);
+  assert.throws(
+    () => buildPinnedEntrypointCommand("/plugin/core/gate.mjs", "pass", "node"),
+    /absolute path/
+  );
   assert.throws(() => adapterCommand("unknown", "/plugin"), /Unsupported adapter/);
+});
+
+test("pinned entrypoint commands use an exact runtime path", () => {
+  const command = buildPinnedEntrypointCommand(
+    "/plugin/core/gate.mjs",
+    "pass",
+    "/opt/trusted node/bin/node",
+    "linux"
+  );
+  assert.match(command, /^'\/opt\/trusted node\/bin\/node' -e "/);
+  assert.doesNotMatch(command, /^node -e /);
+  assert.equal(parsePinnedEntrypointCommand(command).entrypoint, "/plugin/core/gate.mjs");
+  assert.equal(parsePinnedEntrypointCommand(command).argument, "pass");
+});
+
+test("Windows pinned runtime paths are decoded as data before invocation", () => {
+  const runtime = String.raw`C:\Program Files\node-$HOME-$(whoami)-%TEMP%-&-|-'-"\node.exe`;
+  const command = buildPinnedEntrypointCommand(
+    String.raw`C:\plugin\core\gate.mjs`,
+    "pass",
+    runtime,
+    "win32"
+  );
+  const match = command.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/);
+  assert.ok(match, command);
+  assert.equal(Buffer.from(match[1], "base64").toString("utf8"), runtime);
+  assert.equal(command.includes(runtime), false);
+  assert.match(command, /^& \(/);
+});
+
+test("pinned control executes through native Windows PowerShell", {
+  skip: process.platform !== "win32"
+}, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-win-node-shadow-"));
+  const binaryDirectory = path.join(directory, "bin");
+  const sentinel = path.join(directory, "shadow-node-ran");
+  fs.mkdirSync(binaryDirectory);
+  fs.writeFileSync(path.join(binaryDirectory, "node.cmd"), `@echo ran>${sentinel}\r\n`);
+
+  for (const [action, marker] of [
+    ["pass", "<!-- comprehension-gate:pass -->\n"],
+    ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
+  ]) {
+    const command = buildPinnedEntrypointCommand(
+      path.join(root, "core", "gate.mjs"),
+      action
+    );
+    const result = spawnSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", command],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${binaryDirectory}${path.delimiter}${process.env.PATH ?? ""}`
+        }
+      }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, marker);
+    assert.equal(fs.existsSync(sentinel), false, action);
+  }
 });
 
 test("encoded adapter commands execute through native Windows shells", {
@@ -263,6 +331,16 @@ function adapterCommandFromConfig(provider, config) {
 
 function parseEntrypointCommand(command) {
   const match = command.match(/^node -e "([^"]+)" ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
+  assert.ok(match, command);
+  return {
+    bootstrap: match[1],
+    entrypoint: Buffer.from(match[2], "base64url").toString("utf8"),
+    argument: match[3]
+  };
+}
+
+function parsePinnedEntrypointCommand(command) {
+  const match = command.match(/^'[^']+(?:'"'"'[^']*)*' -e "([^"]+)" ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
   assert.ok(match, command);
   return {
     bootstrap: match[1],

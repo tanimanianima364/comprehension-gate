@@ -5,15 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  controlCommand,
   controlTarget,
   controlTransitionSucceeded,
   handleHook,
-  malformedInputResult
+  malformedInputResult,
+  renderInstructions
 } from "../core/gate.mjs";
 import { readGateState, stateFilePath } from "../core/state.mjs";
 
 test("compatible flow blocks shell and writes until the native pass control completes", () => {
-  const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
+  const fixture = createFixture();
   const base = { session_id: "session-1", turn_id: "turn-1" };
 
   const start = handleHook(
@@ -95,7 +97,7 @@ test("pending gates deny MCP tools across providers and restore them after pass"
     {
       name: "compatible",
       mode: "compatible",
-      fixture: createFixture({ PLUGIN_ROOT: "/plugin" }),
+      fixture: createFixture(),
       base: { session_id: "mcp-compatible", turn_id: "turn-1" },
       startEvent: "SessionStart",
       preEvent: "PreToolUse",
@@ -128,8 +130,8 @@ test("pending gates deny MCP tools across providers and restore them after pass"
       startEvent: "SessionStart",
       preEvent: "preToolUse",
       postEvent: "postToolUse",
-      readTool: "fs_read",
-      controlField: "path",
+      readTool: "read",
+      controlField: "kiroOperations",
       shellTool: "execute_bash",
       mcpTool: "@filesystem/write_file",
       response: { success: true, result: ["<!-- comprehension-gate:pass -->"] }
@@ -227,9 +229,9 @@ test("first PreToolUse initializes missing state and permits a later pass", () =
     {
       ...base,
       hook_event_name: "PreToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "missing-pass",
-      tool_input: controlInput("pass")
+      tool_input: { command: controlCommand("pass") }
     },
     "compatible",
     fixture
@@ -239,9 +241,9 @@ test("first PreToolUse initializes missing state and permits a later pass", () =
     {
       ...base,
       hook_event_name: "PostToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "missing-pass",
-      tool_input: controlInput("pass"),
+      tool_input: { command: controlCommand("pass") },
       tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
     },
     "compatible",
@@ -344,9 +346,9 @@ test("a failed Codex control result cannot pass the gate", () => {
     {
       session_id: base.session_id,
       hook_event_name: "PreToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "failed-tool",
-      tool_input: controlInput("pass")
+      tool_input: { command: controlCommand("pass") }
     },
     "compatible",
     fixture
@@ -357,9 +359,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PostToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "failed-tool",
-      tool_input: controlInput("pass"),
+      tool_input: { command: controlCommand("pass") },
       tool_response: { exit_code: 1, output: "Process exited with code 1" }
     },
     "compatible",
@@ -378,9 +380,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PreToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "successful-tool",
-      tool_input: controlInput("pass")
+      tool_input: { command: controlCommand("pass") }
     },
     "compatible",
     fixture
@@ -390,9 +392,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PostToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "successful-tool",
-      tool_input: controlInput("pass"),
+      tool_input: { command: controlCommand("pass") },
       tool_response: {
         exit_code: 0,
         output: "<!-- comprehension-gate:pass -->\n"
@@ -417,9 +419,9 @@ test("a control completion armed in an earlier turn cannot pass a reset gate", (
     {
       ...first,
       hook_event_name: "PreToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "old-tool",
-      tool_input: controlInput("pass")
+      tool_input: { command: controlCommand("pass") }
     },
     "compatible",
     fixture
@@ -435,9 +437,9 @@ test("a control completion armed in an earlier turn cannot pass a reset gate", (
     {
       ...first,
       hook_event_name: "PostToolUse",
-      tool_name: "Read",
+      tool_name: "Bash",
       tool_use_id: "old-tool",
-      tool_input: controlInput("pass"),
+      tool_input: { command: controlCommand("pass") },
       tool_response: { exit_code: 0, output: "<!-- comprehension-gate:pass -->" }
     },
     "compatible",
@@ -525,8 +527,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "preToolUse",
-      tool_name: "fs_read",
-      tool_input: controlInput("pass")
+      tool_name: "read",
+      tool_input: controlInput("pass", "kiroOperations")
     },
     "kiro",
     fixture
@@ -535,8 +537,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "postToolUse",
-      tool_name: "fs_read",
-      tool_input: controlInput("pass"),
+      tool_name: "read",
+      tool_input: controlInput("pass", "kiroOperations"),
       tool_response: {
         success: false,
         result: ["<!-- comprehension-gate:pass -->"]
@@ -558,8 +560,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "preToolUse",
-      tool_name: "fs_read",
-      tool_input: controlInput("pass")
+      tool_name: "read",
+      tool_input: controlInput("pass", "kiroOperations")
     },
     "kiro",
     fixture
@@ -568,8 +570,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "postToolUse",
-      tool_name: "fs_read",
-      tool_input: controlInput("pass"),
+      tool_name: "read",
+      tool_input: controlInput("pass", "kiroOperations"),
       tool_response: {
         success: true,
         result: ["<!-- comprehension-gate:pass -->"]
@@ -721,6 +723,289 @@ test("native control targets contain the exact standalone markers", () => {
   assertDenied(shellRead, "compatible", "control target through shell");
 });
 
+test("Codex completes pass and LOW bypass through only the exact pinned Bash control", t => {
+  for (const action of ["pass", "bypass-low"]) {
+    const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
+    const base = {
+      session_id: `codex-pinned-${action}`,
+      turn_id: "turn-1"
+    };
+    const start = handleHook(
+      { ...base, hook_event_name: "SessionStart" },
+      "compatible",
+      fixture
+    );
+    const instructions = JSON.parse(start.stdout).hookSpecificOutput.additionalContext;
+    assert.match(instructions, new RegExp(escapeRegExp(controlCommand("pass"))));
+    assert.match(instructions, new RegExp(escapeRegExp(controlCommand("bypass-low"))));
+    assert.doesNotMatch(instructions, new RegExp(escapeRegExp(controlTarget("pass"))));
+    assert.equal(renderInstructions("codex"), instructions);
+
+    if (action === "pass") {
+      handleHook(
+        {
+          ...base,
+          hook_event_name: "PreToolUse",
+          tool_name: "Read",
+          tool_use_id: "synthetic-read",
+          tool_input: controlInput("pass")
+        },
+        "compatible",
+        fixture
+      );
+      assertDenied(
+        handleHook(
+          { ...base, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+          "compatible",
+          fixture
+        ),
+        "compatible",
+        "Codex synthetic Read did not arm"
+      );
+    }
+
+    const command = controlCommand(action);
+    assert.equal(command.startsWith("node "), false);
+    if (process.platform === "win32") {
+      assert.equal(command.includes(process.execPath), false);
+    } else {
+      assert.match(command, new RegExp(escapeRegExp(process.execPath)));
+    }
+    for (const alteredCommand of [
+      ` ${command}`,
+      `${command} `,
+      `${command} --extra`,
+      `${command}; echo mutate`
+    ]) {
+      assertDenied(
+        handleHook(
+          {
+            ...base,
+            hook_event_name: "PreToolUse",
+            tool_name: "Bash",
+            tool_input: { command: alteredCommand }
+          },
+          "compatible",
+          fixture
+        ),
+        "compatible",
+        `${action}: altered control command`
+      );
+    }
+    assertDenied(
+      handleHook(
+        {
+          ...base,
+          hook_event_name: "PreToolUse",
+          tool_name: "execute_command",
+          tool_input: { command }
+        },
+        "compatible",
+        fixture
+      ),
+      "compatible",
+      `${action}: non-Codex shell tool name`
+    );
+
+    const toolUseId = `codex-${action}`;
+    const arm = handleHook(
+      {
+        ...base,
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_use_id: toolUseId,
+        tool_input: { command }
+      },
+      "compatible",
+      fixture
+    );
+    assert.equal(arm.stdout, "");
+    assertDenied(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: {} },
+        "compatible",
+        fixture
+      ),
+      "compatible",
+      `${action}: arm alone did not satisfy the gate`
+    );
+
+    let result;
+    if (process.platform === "win32") {
+      t.diagnostic("Native command execution is covered by the Windows-conditional command test.");
+      result = {
+        status: 0,
+        stdout: action === "pass"
+          ? "<!-- comprehension-gate:pass -->\n"
+          : "<!-- comprehension-gate:bypass-low -->\n",
+        stderr: ""
+      };
+    } else {
+      result = spawnSync(command, {
+        encoding: "utf8",
+        shell: "/bin/sh",
+        env: fixture.env
+      });
+    }
+    assert.equal(result.status, 0, result.stderr);
+
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_use_id: toolUseId,
+        tool_input: { command },
+        tool_response: { exit_code: result.status, output: result.stdout }
+      },
+      "compatible",
+      fixture
+    );
+    assert.equal(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: {} },
+        "compatible",
+        fixture
+      ).stdout,
+      "",
+      action
+    );
+  }
+});
+
+test("Codex pinned control command ignores PATH-shadowed node", t => {
+  if (process.platform === "win32") {
+    t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
+    return;
+  }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-node-shadow-"));
+  const binaryDirectory = path.join(directory, "bin");
+  const sentinel = path.join(directory, "shadow-node-ran");
+  fs.mkdirSync(binaryDirectory);
+  fs.writeFileSync(
+    path.join(binaryDirectory, "node"),
+    `#!/bin/sh\ntouch ${JSON.stringify(sentinel)}\n`
+  );
+  fs.chmodSync(path.join(binaryDirectory, "node"), 0o700);
+  const env = { ...process.env, PATH: `${binaryDirectory}${path.delimiter}${process.env.PATH ?? ""}` };
+  const result = spawnSync(controlCommand("pass"), {
+    cwd: directory,
+    env,
+    encoding: "utf8",
+    shell: "/bin/sh"
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "<!-- comprehension-gate:pass -->\n");
+  assert.equal(fs.existsSync(sentinel), false, "pinned control used PATH-shadowed node");
+});
+
+test("Kiro control reads require exactly one operations path on Pre and Post", () => {
+  const invalidInputs = [
+    ["direct path", controlInput("pass", "path")],
+    ["missing operations", {}],
+    ["empty operations", { operations: [] }],
+    ["non-array operations", { operations: "invalid" }],
+    ["null operation", { operations: [null] }],
+    ["missing path", { operations: [{ mode: "Line" }] }],
+    ["non-string path", { operations: [{ mode: "Line", path: 42 }] }],
+    ["two operations", {
+      operations: [
+        { mode: "Line", path: controlTarget("pass") },
+        { mode: "Line", path: controlTarget("pass") }
+      ]
+    }],
+    ["wrong operations path", {
+      operations: [{ mode: "Line", path: `${controlTarget("pass")}.other` }]
+    }],
+    ["direct target cannot override empty operations", {
+      path: controlTarget("pass"),
+      operations: []
+    }]
+  ];
+
+  for (const [index, [name, toolInput]] of invalidInputs.entries()) {
+    const fixture = createFixture();
+    const base = { session_id: `kiro-invalid-operations-${index}` };
+    handleHook({ ...base, hook_event_name: "SessionStart" }, "kiro", fixture);
+    const event = {
+      ...base,
+      tool_name: "read",
+      tool_use_id: `bad-${index}`,
+      tool_input: toolInput
+    };
+    const read = handleHook(
+      {
+        ...event,
+        hook_event_name: "preToolUse",
+      },
+      "kiro",
+      fixture
+    );
+    assert.equal(read.stdout, "", name);
+    handleHook(
+      {
+        ...event,
+        hook_event_name: "postToolUse",
+        tool_response: {
+          success: true,
+          result: ["<!-- comprehension-gate:pass -->"]
+        }
+      },
+      "kiro",
+      fixture
+    );
+    assertDenied(
+      handleHook(
+        { ...base, hook_event_name: "preToolUse", tool_name: "write", tool_input: {} },
+        "kiro",
+        fixture
+      ),
+      "kiro",
+      name
+    );
+  }
+
+  const fixture = createFixture();
+  const base = { session_id: "kiro-valid-operations" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "kiro", fixture);
+  const arm = handleHook(
+    {
+      ...base,
+      hook_event_name: "preToolUse",
+      tool_name: "read",
+      tool_use_id: "kiro-pass",
+      tool_input: controlInput("pass", "kiroOperations")
+    },
+    "kiro",
+    fixture
+  );
+  assert.equal(arm.stdout, "");
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "postToolUse",
+      tool_name: "read",
+      tool_use_id: "kiro-pass",
+      tool_input: controlInput("pass", "kiroOperations"),
+      tool_response: {
+        success: true,
+        result: ["<!-- comprehension-gate:pass -->"]
+      }
+    },
+    "kiro",
+    fixture
+  );
+
+  const allowed = handleHook(
+    { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
+    "kiro",
+    fixture
+  );
+  assert.equal(allowed.exitCode, 0);
+});
+
 test("LOW bypass completes through the native read control", () => {
   const fixture = createFixture();
   const base = { session_id: "native-low-control" };
@@ -852,7 +1137,14 @@ function createFixture(extraEnv = {}) {
 }
 
 function controlInput(action, field = "file_path") {
+  if (field === "kiroOperations") {
+    return { operations: [{ mode: "Line", path: controlTarget(action) }] };
+  }
   return { [field]: controlTarget(action) };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function assertDenied(result, mode, message) {

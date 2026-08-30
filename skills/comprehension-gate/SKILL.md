@@ -15,4 +15,4 @@ Choose the minimum appropriate level:
 
 Judge the mental model rather than exact terminology. If an answer is partly correct, identify the missing concept, explain only that part, and ask one focused follow-up. Do not accept a bare confirmation such as “I understand.”
 
-When the required understanding is demonstrated, read the exact `pass` control target supplied by the active Comprehension Gate session instructions with the native file-reading tool, then state briefly that the gate is satisfied. Do not invent a control target, use a shell to read it, or use the LOW bypass from this manual check.
+When the required understanding is demonstrated, use the exact `pass` control action supplied by the active Comprehension Gate session instructions, then state briefly that the gate is satisfied. Do not invent a control target, use a shell unless the active instructions provide an exact provider-specific shell control command, or use the LOW bypass from this manual check.
