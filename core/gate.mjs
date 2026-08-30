@@ -105,6 +105,8 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const commandOptions = controlCommandOptions(options);
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
+  // Only trusted lifecycle events may record the workspace Codex inspection is pinned to.
+  const trustedReset = { workspace: normalizeHookWorkspace(input?.cwd, commandOptions.platform) };
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
   const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
 
@@ -120,10 +122,10 @@ export function handleHook(input, mode = "compatible", options = {}) {
       if (source === "compact") {
         const current = readGateState(provider, input, stateOptions);
         if (!current.ok) {
-          resetGate(provider, input, stateOptions);
+          resetGate(provider, input, stateOptions, trustedReset);
         }
       } else {
-        resetGate(provider, input, stateOptions);
+        resetGate(provider, input, stateOptions, trustedReset);
       }
       return contextResult(
         mode,
@@ -133,7 +135,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
     }
 
     if (isPromptEvent) {
-      resetGate(provider, input, stateOptions);
+      resetGate(provider, input, stateOptions, trustedReset);
       return contextResult(
         mode,
         "UserPromptSubmit",
@@ -153,14 +155,14 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    ensureGateState(provider, input, stateOptions);
+    const state = ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name, provider);
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
     }
-    if (provider === "codex" && codexInspectionAction(input, commandOptions)) {
+    if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
       return allowResult();
     }
     if (toolKind === "read" || toolKind === "harness") {
@@ -350,13 +352,18 @@ function codexShellControlAction(input, commandOptions) {
   return null;
 }
 
-function codexInspectionAction(input, commandOptions) {
+function codexInspectionAction(input, state, commandOptions) {
   if (input?.tool_name !== "Bash") {
     return null;
   }
   const command = input?.tool_input?.command;
   const workspace = normalizeHookWorkspace(input?.cwd, commandOptions.platform);
   if (typeof command !== "string" || !workspace) {
+    return null;
+  }
+  // Pin inspection to the canonical workspace recorded by the last trusted
+  // lifecycle event; a per-call cwd may only narrow the readable tree.
+  if (state.workspace === null || !isSameOrDescendant(state.workspace, workspace, commandOptions.platform)) {
     return null;
   }
 
@@ -569,6 +576,15 @@ function formatCodexInspectionInstructions(cwd, commandOptions = {}) {
     `Read one UTF-8 file:\n${format(read)}`,
     `Search UTF-8 files for a literal string:\n${format(search)}`
   ].join("\n");
+}
+
+function isSameOrDescendant(root, candidate, platform = process.platform) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const relative = pathApi.relative(root, candidate);
+  if (relative === "") {
+    return true;
+  }
+  return !pathApi.isAbsolute(relative) && relative.split(pathApi.sep)[0] !== "..";
 }
 
 function normalizeHookWorkspace(value, platform = process.platform) {
