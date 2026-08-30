@@ -23,7 +23,7 @@ UserPromptSubmit -> state = pending
 PreToolUse(any observable local tool, including MCP)
   known read-only tool -> allow
   exact pass or bypass-low control action -> arm and allow it
-  shell command -> deny while pending, except Codex's exact pinned control command
+  shell command -> deny while pending, except a Codex exact pinned control command
   pending + anything else -> deny
 PostToolUse(matching successful control action + expected marker)
   -> update session state
@@ -32,7 +32,7 @@ PostToolUse(matching successful control action + expected marker)
 
 State is stored outside the project and keyed by a SHA-256 digest of provider plus `session_id`. Codex `turn_id` is also checked when available. If the first observed lifecycle event is `PreToolUse`, a missing state is initialized to pending before policy evaluation; invalid or unreadable state remains fail-closed. Writes use a temporary file and rename so parallel hook processes never observe partially written JSON. Set `COMPREHENSION_GATE_STATE_DIR` to override the state directory for tests or managed deployments.
 
-Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools proceeds. Shell commands are denied while pending, including commands that appear read-only, because PATH, functions, aliases, cmdlets, and external executable resolution can change their identity. Unknown tools and MCP tools are also denied while pending. Claude Code, Cursor, and Kiro pass or LOW bypass through native reads of plugin-owned marker files. Codex does not expose a built-in native Read tool on its standard hook path, so Codex pass and LOW bypass use an exact shell command pinned to the current `process.execPath` and the base64url-encoded gate entrypoint; no other shell command is allowed before pass. After pass, the hook stays silent and the host's normal permission model applies.
+Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools proceeds. Shell commands are denied while pending, including commands that appear read-only, because PATH, functions, aliases, cmdlets, and external executable resolution can change their identity. Unknown tools and MCP tools are also denied while pending. Claude Code, Cursor, and Kiro pass or LOW bypass through native reads of plugin-owned marker files. Codex does not expose a built-in native Read tool on its standard hook path, so Codex pass and LOW bypass use exact shell commands pinned to the current `process.execPath` and the base64url-encoded gate entrypoint; no other shell command is allowed before pass. On Windows, the instructions label separate PowerShell, `cmd.exe`, and Bash/Sh forms. The agent must run only the form for its active shell, and the hook accepts only one of those generated strings as an exact match. After pass, the hook stays silent and the host's normal permission model applies.
 
 Use the host's native Read, Search, Glob, and equivalent inspection tools before pass. Shell-based Git, ripgrep, and other command-line inspection becomes available only after the gate is satisfied and remains subject to the host permission model.
 
@@ -52,7 +52,7 @@ For Claude Code, install `learning-output-style` separately, then load this repo
 claude --plugin-dir /absolute/path/to/comprehension-gate
 ```
 
-Codex discovers `hooks/hooks.json` from the plugin root after the plugin is installed and trusted. Use `/hooks` to review and trust the exact hook definition. Codex also supplies `CLAUDE_PLUGIN_ROOT` for Claude-compatible plugin hooks. The session instructions will show Codex the exact pinned pass and LOW bypass commands to run after mastery.
+Codex discovers `hooks/hooks.json` from the plugin root after the plugin is installed and trusted. Use `/hooks` to review and trust the exact hook definition. Codex also supplies `CLAUDE_PLUGIN_ROOT` for Claude-compatible plugin hooks. The session instructions will show Codex the exact pinned pass and LOW bypass commands to run after mastery. On Windows, select the command labeled for PowerShell, `cmd.exe`, or Bash/Sh; copying a command from a different label remains blocked or fails in that shell.
 
 Cursor can reuse the Claude hook configuration when third-party plugins/configs are enabled. For a native Cursor configuration, render the template to a new file and merge it into the target project if that file already exists:
 
@@ -91,16 +91,21 @@ The renderer encodes the absolute entrypoint as a base64url argument and uses a 
 npm test
 ```
 
-The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed provider control completion, failed provider results, Codex turn isolation and exact pinned pass/bypass controls, all ordinary shell denial before pass, a PATH-shadowed `node` regression, Kiro single-operation `operations[].path` reads and malformed forms, MCP/unknown-tool denial across providers, encoded adapter execution with shell metacharacters, synthetic Windows path round trips, both Kiro start event forms, and provider-specific output shapes.
+The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed provider control completion, failed provider results, Codex turn isolation and exact pinned pass/bypass controls, Windows PowerShell/`cmd.exe`/Bash/Sh control execution, all ordinary shell denial before pass, a PATH-shadowed `node` regression, Kiro single-operation `operations[].path` reads and malformed forms, MCP/unknown-tool denial across providers, encoded adapter execution with shell metacharacters, synthetic Windows path round trips, both Kiro start event forms, and provider-specific output shapes.
 
 ## Security boundary
 
 This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. Host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code. The host hook runner and the Node executable it uses to start this plugin are part of the trusted bootstrap. Codex controls pin that already-running executable by absolute identity; adapter bootstrap commands still require a trusted launch environment.
 
+## Known limitations
+
+Windows Codex control generation fails closed when the absolute Node runtime path contains `%` or `!`, because those characters cannot be preserved as literal path bytes through the exact `cmd /c` transport without enabling expansion. Conventional Node installation paths are unaffected. Move the Node installation to a path without those characters before using the plugin.
+
 Current primary references:
 
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+- [Codex shell dispatch source](https://github.com/openai/codex/blob/main/codex-rs/core/src/shell.rs)
 - [Cursor hooks](https://cursor.com/docs/hooks)
 - [Kiro CLI hooks](https://kiro.dev/docs/cli/hooks/)
 - [Kiro built-in tools](https://kiro.dev/docs/reference/built-in-tools/)

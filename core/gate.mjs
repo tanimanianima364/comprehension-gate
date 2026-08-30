@@ -11,7 +11,7 @@ import {
   readGateState,
   resetGate
 } from "./state.mjs";
-import { buildPinnedEntrypointCommand } from "./command.mjs";
+import { buildPinnedEntrypointCommands } from "./command.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
@@ -30,10 +30,14 @@ export function controlTarget(action) {
 }
 
 export function controlCommand(action, options = {}) {
+  return controlCommands(action, options)[0].command;
+}
+
+export function controlCommands(action, options = {}) {
   if (!CONTROL_ACTIONS.has(action)) {
     throw new Error(`Unknown control action: ${action}`);
   }
-  return buildPinnedEntrypointCommand(
+  return buildPinnedEntrypointCommands(
     SCRIPT_PATH,
     action,
     options.runtime ?? process.execPath,
@@ -41,22 +45,25 @@ export function controlCommand(action, options = {}) {
   );
 }
 
-export function renderInstructions(provider = "claude") {
+export function renderInstructions(provider = "claude", options = {}) {
   const usesShellControl = provider === "codex";
+  const commandOptions = controlCommandOptions(options);
   return fs
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
     .replaceAll(
       "{{PASS_CONTROL}}",
-      usesShellControl ? controlCommand("pass") : controlTarget("pass")
+      usesShellControl ? formatCodexControlCommands("pass", commandOptions) : controlTarget("pass")
     )
     .replaceAll(
       "{{BYPASS_CONTROL}}",
-      usesShellControl ? controlCommand("bypass-low") : controlTarget("bypass-low")
+      usesShellControl
+        ? formatCodexControlCommands("bypass-low", commandOptions)
+        : controlTarget("bypass-low")
     )
     .replaceAll(
       "{{CONTROL_METHOD}}",
       usesShellControl
-        ? "In Codex, run the command exactly as shown. It is the only shell command available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
+        ? "In Codex, run one command exactly as shown for the active shell. These are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
         : "Read the path exactly as shown with the host's native file-reading tool. Do not use a shell command to read it."
     );
 }
@@ -64,6 +71,7 @@ export function renderInstructions(provider = "claude") {
 export function handleHook(input, mode = "compatible", options = {}) {
   const env = options.env ?? process.env;
   const stateOptions = { env, fs: options.fs };
+  const commandOptions = controlCommandOptions(options);
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
@@ -79,7 +87,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       } else {
         resetGate(provider, input, stateOptions);
       }
-      return contextResult(mode, "SessionStart", renderInstructions(provider));
+      return contextResult(mode, "SessionStart", renderInstructions(provider, commandOptions));
     }
 
     if (isPromptEvent) {
@@ -87,12 +95,12 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "UserPromptSubmit",
-        promptResetContext(provider)
+        promptResetContext(provider, commandOptions)
       );
     }
 
     if (event === "posttooluse") {
-      const action = controlActionFor(input, provider);
+      const action = controlActionFor(input, provider, commandOptions);
       if (action) {
         if (controlTransitionSucceeded(input, provider, action)) {
           completeGateControl(provider, input, action, stateOptions);
@@ -109,7 +117,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
-    const action = controlActionFor(input, provider);
+    const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
       return allowResult();
@@ -123,7 +131,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    return denyResult(mode, denialReason(gate.reason, toolKind, provider));
+    return denyResult(mode, denialReason(gate.reason, toolKind, provider, commandOptions));
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
     if (isPromptEvent) {
@@ -241,9 +249,9 @@ function responseText(response) {
   }
 }
 
-function controlActionFor(input, provider) {
+function controlActionFor(input, provider, commandOptions = {}) {
   if (provider === "codex") {
-    return codexShellControlAction(input);
+    return codexShellControlAction(input, commandOptions);
   }
 
   if (classifyTool(input?.tool_name) !== "read") {
@@ -263,7 +271,7 @@ function controlActionFor(input, provider) {
   return null;
 }
 
-function codexShellControlAction(input) {
+function codexShellControlAction(input, commandOptions) {
   if (input?.tool_name !== "Bash") {
     return null;
   }
@@ -272,7 +280,7 @@ function codexShellControlAction(input) {
     return null;
   }
   for (const action of CONTROL_ACTIONS) {
-    if (command === controlCommand(action)) {
+    if (controlCommands(action, commandOptions).some(({ command: expected }) => command === expected)) {
       return action;
     }
   }
@@ -360,7 +368,7 @@ function allowResult() {
   return { exitCode: 0, stdout: "", stderr: "" };
 }
 
-function denialReason(stateReason, toolKind, provider) {
+function denialReason(stateReason, toolKind, provider, commandOptions = {}) {
   const toolNote = toolKind === "shell"
     ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control command."
     : toolKind === "other"
@@ -368,8 +376,8 @@ function denialReason(stateReason, toolKind, provider) {
       : "";
   const controlInstruction = provider === "codex"
     ? [
-        `After mastery, run this exact Codex pass control command: ${controlCommand("pass")}`,
-        `For a genuinely LOW change only, run this exact Codex LOW bypass command: ${controlCommand("bypass-low")}`
+        `After mastery, run the exact Codex pass command for the active shell: ${formatCodexControlCommands("pass", commandOptions)}`,
+        `For a genuinely LOW change only, run the exact Codex LOW bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)}`
       ]
     : [
         `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
@@ -385,12 +393,30 @@ function denialReason(stateReason, toolKind, provider) {
   return lines.join(" ").trim();
 }
 
-function promptResetContext(provider) {
+function promptResetContext(provider, commandOptions = {}) {
   const nativeReadContext = `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
   if (provider !== "codex") {
     return nativeReadContext;
   }
-  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass control command only after the answer demonstrates understanding: ${controlCommand("pass")} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low")}`;
+  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass command for the active shell only after the answer demonstrates understanding: ${formatCodexControlCommands("pass", commandOptions)} For a genuinely LOW change only, run the exact bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)}`;
+}
+
+function controlCommandOptions(options = {}) {
+  return {
+    runtime: options.runtime ?? process.execPath,
+    platform: options.platform ?? process.platform
+  };
+}
+
+function formatCodexControlCommands(action, commandOptions = {}) {
+  const labels = {
+    powershell: "PowerShell",
+    cmd: "cmd.exe",
+    posix: commandOptions.platform === "win32" ? "Bash / Sh" : "Bash / Sh / POSIX shell"
+  };
+  return controlCommands(action, commandOptions)
+    .map(({ shell, command }) => `${labels[shell]}: ${command}`)
+    .join("\n");
 }
 
 const WRITE_TOOLS = new Set([

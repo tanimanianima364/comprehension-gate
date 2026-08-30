@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import {
   adapterCommand,
   buildEntrypointCommand,
-  buildPinnedEntrypointCommand
+  buildPinnedEntrypointCommand,
+  buildPinnedEntrypointCommands
 } from "../core/command.mjs";
 import { readGateState } from "../core/state.mjs";
 
@@ -141,6 +142,45 @@ test("Windows pinned runtime paths are decoded as data before invocation", () =>
   assert.match(command, /^& \(/);
 });
 
+test("Windows pinned controls use distinct PowerShell, cmd, and POSIX forms", () => {
+  const entrypoint = String.raw`C:\plugin path\core\gate.mjs`;
+  const runtime = String.raw`C:\Program Files\nodejs\node.exe`;
+  const controls = buildPinnedEntrypointCommands(
+    entrypoint,
+    "pass",
+    runtime,
+    "win32"
+  );
+  assert.deepEqual(controls.map(({ shell }) => shell), ["powershell", "cmd", "posix"]);
+
+  const byShell = Object.fromEntries(controls.map(({ shell, command }) => [shell, command]));
+  assert.match(byShell.powershell, /^& \(/);
+  assert.equal(byShell.powershell.includes(runtime), false);
+  assert.match(
+    byShell.cmd,
+    /^%cmdcmdline:~-1%C:\\Program Files\\nodejs\\node\.exe%cmdcmdline:~-1% -e %cmdcmdline:~-1%/
+  );
+  assert.doesNotMatch(byShell.cmd, /"/);
+  assert.match(byShell.posix, /^'C:\\Program Files\\nodejs\\node\.exe' -e "/);
+  for (const command of Object.values(byShell)) {
+    assert.equal(parseAnyPinnedEntrypointCommand(command).entrypoint, entrypoint);
+    assert.equal(parseAnyPinnedEntrypointCommand(command).argument, "pass");
+  }
+
+  assert.throws(
+    () => buildPinnedEntrypointCommand(entrypoint, "pass", runtime, "win32", "fish"),
+    /Unsupported pinned shell/
+  );
+  assert.throws(
+    () => buildPinnedEntrypointCommand("/plugin/gate.mjs", "pass", "/usr/bin/node", "linux", "cmd"),
+    /Unsupported pinned shell/
+  );
+  assert.throws(
+    () => buildPinnedEntrypointCommand(entrypoint, "pass", String.raw`C:\node-%TEMP%\node.exe`, "win32", "cmd"),
+    /cannot be represented safely/
+  );
+});
+
 test("pinned control executes through native Windows PowerShell", {
   skip: process.platform !== "win32"
 }, () => {
@@ -172,6 +212,91 @@ test("pinned control executes through native Windows PowerShell", {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, marker);
     assert.equal(fs.existsSync(sentinel), false, action);
+  }
+});
+
+test("pinned controls execute through native Windows shell families", t => {
+  const nativeWindows = process.platform === "win32";
+  const wslWindows = process.platform === "linux" && fs.existsSync("/mnt/c/Windows/System32/cmd.exe");
+  if (!nativeWindows && !wslWindows) {
+    t.skip("native Windows shell fixtures are unavailable");
+    return;
+  }
+
+  const runtime = nativeWindows
+    ? process.execPath
+    : firstOutputLine(spawnSync("cmd.exe", ["/d", "/c", "where node"], { encoding: "utf8" }));
+  const entrypoint = nativeWindows
+    ? path.join(root, "core", "gate.mjs")
+    : firstOutputLine(spawnSync("wslpath", ["-w", path.join(root, "core", "gate.mjs")], { encoding: "utf8" }));
+  assert.ok(runtime, "Windows node.exe was not found");
+  assert.ok(entrypoint, "Windows entrypoint path was not resolved");
+  const bridgeRuntime = nativeWindows
+    ? runtime
+    : firstOutputLine(spawnSync("wslpath", ["-u", runtime], { encoding: "utf8" }));
+  assert.ok(bridgeRuntime, "Windows node.exe bridge path was not resolved");
+
+  const executors = {
+    powershell(command) {
+      return spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", command],
+        { encoding: "utf8" }
+      );
+    },
+    cmd(command) {
+      const source = [
+        "const { spawnSync } = require('node:child_process');",
+        `const command = ${JSON.stringify(command)};`,
+        "const result = spawnSync('cmd.exe', ['/d', '/c', command], { encoding: 'utf8', cwd: process.env.TEMP });",
+        "process.stdout.write(JSON.stringify({ status: result.status, stdout: result.stdout, stderr: result.stderr, error: result.error ? String(result.error) : '' }));"
+      ].join("\n");
+      const bridge = spawnSync(bridgeRuntime, ["-e", source], { encoding: "utf8" });
+      if (bridge.status !== 0) {
+        return bridge;
+      }
+      return JSON.parse(bridge.stdout);
+    },
+    posix(command) {
+      const candidates = nativeWindows
+        ? [
+            String.raw`C:\Program Files\Git\bin\bash.exe`,
+            String.raw`C:\Program Files\Git\usr\bin\sh.exe`
+          ]
+        : [
+            "/mnt/c/Program Files/Git/bin/bash.exe",
+            "/mnt/c/Program Files/Git/usr/bin/sh.exe"
+          ];
+      const available = candidates.filter(candidate => fs.existsSync(candidate));
+      if (available.length === 0) {
+        t.diagnostic("Git Bash/Sh unavailable; POSIX-on-Windows execution skipped");
+        return null;
+      }
+      for (const executable of available) {
+        const result = spawnSync(executable, ["-lc", command], { encoding: "utf8" });
+        assert.equal(result.status, 0, `${executable}: ${result.stderr}`);
+      }
+      return spawnSync(available[0], ["-lc", command], { encoding: "utf8" });
+    }
+  };
+
+  for (const [action, marker] of [
+    ["pass", "<!-- comprehension-gate:pass -->\n"],
+    ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
+  ]) {
+    for (const { shell, command } of buildPinnedEntrypointCommands(
+      entrypoint,
+      action,
+      runtime,
+      "win32"
+    )) {
+      const result = executors[shell](command);
+      if (result === null) {
+        continue;
+      }
+      assert.equal(result.status, 0, `${action}/${shell}: ${result.stderr ?? ""}${result.error ?? ""}`);
+      assert.equal(result.stdout.replaceAll("\r\n", "\n"), marker, `${action}/${shell}`);
+    }
   }
 });
 
@@ -323,6 +448,13 @@ function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }
 
+function firstOutputLine(result) {
+  if (result.status !== 0) {
+    return "";
+  }
+  return String(result.stdout ?? "").split(/\r?\n/).find(Boolean)?.trim() ?? "";
+}
+
 function adapterCommandFromConfig(provider, config) {
   return provider === "cursor"
     ? config.hooks.sessionStart[0].command
@@ -346,6 +478,15 @@ function parsePinnedEntrypointCommand(command) {
     bootstrap: match[1],
     entrypoint: Buffer.from(match[2], "base64url").toString("utf8"),
     argument: match[3]
+  };
+}
+
+function parseAnyPinnedEntrypointCommand(command) {
+  const match = command.match(/ ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
+  assert.ok(match, command);
+  return {
+    entrypoint: Buffer.from(match[1], "base64url").toString("utf8"),
+    argument: match[2]
   };
 }
 
