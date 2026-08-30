@@ -257,7 +257,7 @@ function classifyTool(toolName, provider = null) {
   // Exact, case-insensitive match only. Stripping characters would let names
   // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
   const normalized = String(toolName ?? "").toLowerCase();
-  if (READ_ONLY_TOOLS.has(normalized)) {
+  if (READ_ONLY_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "read";
   }
   if (WRITE_TOOLS.has(normalized)) {
@@ -269,7 +269,7 @@ function classifyTool(toolName, provider = null) {
   if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "harness";
   }
-  if (NETWORK_TOOLS.has(normalized)) {
+  if (NETWORK_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "network";
   }
   return "other";
@@ -317,7 +317,7 @@ function controlActionFor(input, provider, commandOptions = {}) {
     return codexShellControlAction(input, commandOptions);
   }
 
-  if (classifyTool(input?.tool_name) !== "read") {
+  if (classifyTool(input?.tool_name, provider) !== "read") {
     return null;
   }
   const target = provider === "kiro"
@@ -605,28 +605,18 @@ const WRITE_TOOLS = new Set([
   "writefile"
 ]);
 
-const READ_ONLY_TOOLS = new Set([
-  "file_search",
-  "filesearch",
-  "fs_read",
-  "fsread",
-  "glob",
-  "grep",
-  "list_directory",
-  "listdirectory",
-  "read",
-  "read_file",
-  "read_files",
-  "readfile",
-  "readfiles",
-  "ripgrep",
-  "search_files",
-  "searchfiles",
-  "semantic_search",
-  "semanticsearch",
-  "view_image",
-  "viewimage"
-]);
+/*
+ * Native read-only tools, keyed by provider: a name proves nothing across
+ * hosts, and a Codex extension can present any plain tool name. Only verified
+ * built-in names are listed. Codex has no native local reader on its hook
+ * path and inspects through the pinned bridge commands instead.
+ */
+const READ_ONLY_TOOLS_BY_PROVIDER = {
+  claude: new Set(["glob", "grep", "read"]),
+  cursor: new Set(["glob", "grep", "read"]),
+  kiro: new Set(["fs_read", "read"]),
+  codex: new Set(["view_image"])
+};
 
 /*
  * Host-side tools that cannot mutate the project, keyed by provider because a
@@ -650,12 +640,11 @@ const HARNESS_TOOLS_BY_PROVIDER = {
 };
 
 // Denied while pending by default: an HTTP request can have side effects.
-const NETWORK_TOOLS = new Set([
-  "web_fetch",
-  "web_search",
-  "webfetch",
-  "websearch"
-]);
+// Keyed by provider for the same reason as the read-only list; the opt-in
+// only ever covers a host's own built-in network tools.
+const NETWORK_TOOLS_BY_PROVIDER = {
+  claude: new Set(["webfetch", "websearch"])
+};
 
 const SHELL_TOOLS = new Set([
   "bash",

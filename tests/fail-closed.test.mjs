@@ -78,7 +78,7 @@ test("tool names that only collide with the read-only allowlist after stripping 
 });
 
 test("canonical read-only tool names still pass through case-insensitively", () => {
-  for (const toolName of ["Read", "read_file", "Grep", "Glob"]) {
+  for (const toolName of ["Read", "Grep", "Glob"]) {
     const result = handleHook(
       {
         session_id: `canonical-${toolName}`,

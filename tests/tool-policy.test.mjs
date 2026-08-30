@@ -7,7 +7,7 @@ import { handleHook } from "../core/gate.mjs";
 
 const HARNESS_TOOLS = ["AskUserQuestion", "LS", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
 const DELEGATING_TOOLS = ["Skill", "Agent", "Task"];
-const NETWORK_TOOLS = ["WebFetch", "WebSearch", "web_fetch", "web_search"];
+const NETWORK_TOOLS = ["WebFetch", "WebSearch"];
 
 test("pending gates allow harness tools that cannot mutate the project", () => {
   for (const toolName of HARNESS_TOOLS) {
@@ -35,6 +35,24 @@ test("the harness allowlist is provider-specific: Claude Code names are not trus
     const result = pending("AskUserQuestion", createFixture(), mode);
     const denied = mode === "kiro" ? result.exitCode === 2 : JSON.parse(result.stdout).permission === "deny";
     assert.ok(denied, `${mode}: AskUserQuestion must be denied`);
+  }
+});
+
+test("the read-only allowlist is provider-specific: generic read names are not trusted on Codex", () => {
+  for (const toolName of ["read_file", "read", "search_files", "semantic_search", "Read", "Grep"]) {
+    const result = pending(toolName, createFixture({ PLUGIN_ROOT: "/plugin" }));
+    const output = result.stdout ? JSON.parse(result.stdout) : null;
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied on Codex while pending`);
+  }
+  assert.equal(pending("view_image", createFixture({ PLUGIN_ROOT: "/plugin" })).stdout, "", "Codex view_image is read-only");
+});
+
+test("the network opt-in only covers the provider's own built-in network tools", () => {
+  const fixture = createFixture({ PLUGIN_ROOT: "/plugin", COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION: "1" });
+  for (const toolName of ["web_search", "web_fetch", "WebFetch"]) {
+    const result = pending(toolName, fixture);
+    const output = result.stdout ? JSON.parse(result.stdout) : null;
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must stay denied on Codex even with the opt-in`);
   }
 });
 
