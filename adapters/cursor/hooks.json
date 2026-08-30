@@ -23,7 +23,6 @@
     "postToolUse": [
       {
         "command": "__COMPREHENSION_GATE_COMMAND__",
-        "matcher": "Shell",
         "timeout": 5
       }
     ]

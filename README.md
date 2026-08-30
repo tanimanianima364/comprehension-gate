@@ -2,7 +2,7 @@
 
 Comprehension Gate layers a deterministic write gate on top of an agent's learning behavior. It does not fork or replace the official `learning-output-style` plugin.
 
-The agent still decides whether a change is LOW, MEDIUM, HIGH, or CRITICAL and evaluates the user's explanation. The hook only owns execution control: each submitted user message resets the gate, project mutation is denied while the gate is pending, and an exact one-purpose control command records pass or LOW bypass state for the current session/turn.
+The agent still decides whether a change is LOW, MEDIUM, HIGH, or CRITICAL and evaluates the user's explanation. The hook only owns execution control: each submitted user message resets the gate, project mutation is denied while the gate is pending, and a native read of an exact plugin-owned control target records pass or LOW bypass state for the current session/turn.
 
 ## Supported adapters
 
@@ -22,19 +22,19 @@ SessionStart -> inject shared instructions
 UserPromptSubmit -> state = pending
 PreToolUse(any observable local tool, including MCP)
   known read-only tool -> allow
-  conservative read-only shell command -> allow
+  exact native-read pass or bypass-low target -> arm and allow that read
+  shell command -> deny while pending
   pending + anything else -> deny
-  exact pass or bypass-low command -> arm and allow that one command
-PostToolUse(matching successful control command + expected marker)
+PostToolUse(matching successful control read + expected marker)
   -> update session state
   satisfied -> let the host permission model decide
 ```
 
 State is stored outside the project and keyed by a SHA-256 digest of provider plus `session_id`. Codex `turn_id` is also checked when available. If the first observed lifecycle event is `PreToolUse`, a missing state is initialized to pending before policy evaluation; invalid or unreadable state remains fail-closed. Writes use a temporary file and rename so parallel hook processes never observe partially written JSON. Set `COMPREHENSION_GATE_STATE_DIR` to override the state directory for tests or managed deployments.
 
-Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools plus conservatively parsed read-only shell commands proceeds. Unknown tools and MCP tools are denied while pending, even when their names appear read-like, because the gate cannot verify arbitrary provider semantics. After pass, the hook stays silent and the host's normal permission model applies.
+Tool handling is fail-closed before mastery: the adapters route every observable `PreToolUse` event through the gate, and only an explicit allowlist of native inspection tools proceeds. Every shell command is denied while pending, including commands that appear read-only, because PATH, functions, aliases, cmdlets, and external executable resolution can change their identity. Unknown tools and MCP tools are also denied while pending. Pass and LOW bypass use native reads of plugin-owned marker files, so no shell exception is required. After pass, the hook stays silent and the host's normal permission model applies.
 
-Git inspection is deliberately narrower than normal interactive Git usage. Every allowed Git command must begin with `git --no-pager -c core.fsmonitor=false`. `diff`, `log`, and `show` additionally require both `--no-ext-diff` and `--no-textconv`; `log` and `show` also require `--no-show-signature`, and signature-verifying formats are denied. `cat-file` filter/textconv modes and `grep` pager/textconv modes are denied. `status` is denied while pending, and `remote show` requires `-n`. These constraints close the enumerated configured pager, diff/textconv/filter/signature, fsmonitor, and default `remote show` process paths; they do not turn Git into a sandbox.
+Use the host's native Read, Search, Glob, and equivalent inspection tools before pass. Shell-based Git, ripgrep, and other command-line inspection becomes available only after the gate is satisfied and remains subject to the host permission model.
 
 The Kiro adapter uses the documented `*` matcher to cover built-in and MCP tools. It handles the configured `SessionStart` event and also accepts Kiro's documented CLI payload name, `agentSpawn`, for compatibility.
 
@@ -75,11 +75,11 @@ The renderer encodes the absolute entrypoint as a base64url argument and uses a 
 npm test
 ```
 
-The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed control-command completion, failed provider results, Codex turn isolation, strict control-command matching, conservative shell inspection, configured Git helper suppression, MCP/unknown-tool denial across providers, encoded adapter execution with shell metacharacters, synthetic Windows path round trips, both Kiro start event forms, and provider-specific output shapes.
+The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed native-read control completion, failed provider results, Codex turn isolation, all-shell denial before pass, PATH-shadowing regression, MCP/unknown-tool denial across providers, encoded adapter execution with shell metacharacters, synthetic Windows path round trips, both Kiro start event forms, and provider-specific output shapes.
 
 ## Security boundary
 
-This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. Host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code.
+This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. Host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code. The host hook runner and the `node` executable it uses to start this plugin are part of the trusted bootstrap; install and launch the agent with a trusted PATH.
 
 Current primary references:
 

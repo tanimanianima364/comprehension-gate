@@ -35,7 +35,7 @@
     {
       "name": "comprehension-gate-post-tool-use",
       "trigger": "PostToolUse",
-      "matcher": "shell|execute_bash|execute_cmd",
+      "matcher": "*",
       "action": {
         "type": "command",
         "command": "__COMPREHENSION_GATE_COMMAND__"

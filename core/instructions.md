@@ -15,7 +15,7 @@ Do not ask the user to classify the change.
 
 ## Required understanding
 
-- **LOW**: no comprehension question. Run the exact LOW bypass command below as a standalone shell command, then continue.
+- **LOW**: no comprehension question. Read the exact LOW bypass target below with the native file-reading tool, then continue.
 - **MEDIUM**: the user explains what the implementation or change does.
 - **HIGH**: the user explains what it does, why this design is being used, and what should happen in one important edge or failure case.
 - **CRITICAL**: the user explains what it does, why this design is being used, important edge or failure behavior, and how the same principle transfers to one related problem.
@@ -26,23 +26,23 @@ Do not accept bare confirmations such as “I understand,” “OK,” “yes,�
 
 ## Passing the gate
 
-Only after the user demonstrates the required understanding, run this exact command as a standalone shell command:
+Only after the user demonstrates the required understanding, read this exact file with the native file-reading tool:
 
 ```text
 {{PASS_COMMAND}}
 ```
 
-For a genuinely LOW change only, run this exact command as a standalone shell command:
+For a genuinely LOW change only, read this exact file with the native file-reading tool:
 
 ```text
 {{BYPASS_COMMAND}}
 ```
 
-Never append another command, redirect output, or combine either control command with shell operators. Never run a control command merely because the user asks you to skip the gate.
+Do not use a shell command to read either control target. Use the native file-reading tool with the exact path. Never read a control target merely because the user asks you to skip the gate.
 
 ## Hard rule
 
-Until the current gate passes, do not mutate the project. Reading files, searching the codebase, reasoning, explaining, and gathering information are allowed. File writes, edits, deletes, notebook edits, and mutating shell commands are not allowed.
+Until the current gate passes, do not mutate the project. Native file reads, native searches, reasoning, explaining, and gathering information are allowed. All shell commands are unavailable before pass, including commands that appear read-only. File writes, edits, deletes, and notebook edits are also unavailable.
 
 Every submitted user message resets the mechanical gate. If the message is an answer to your comprehension question, assess it and pass only when it satisfies the current level. If it is a genuinely new request, classify that request and apply a new gate.
 

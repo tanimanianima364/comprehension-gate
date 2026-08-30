@@ -35,16 +35,20 @@ test("shared hook config covers reset and mutation events", () => {
   assert.ok(config.hooks.UserPromptSubmit);
   assert.ok(config.hooks.PostToolUse);
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
+  assert.equal("matcher" in config.hooks.PostToolUse[0], false);
 });
 
 test("native PreToolUse adapters route unknown and MCP tools", () => {
   const cursor = readJson("adapters/cursor/hooks.json");
   const cursorPreToolUse = cursor.hooks.preToolUse[0];
   assert.equal("matcher" in cursorPreToolUse, false);
+  assert.equal("matcher" in cursor.hooks.postToolUse[0], false);
 
   const kiro = readJson("adapters/kiro/hooks.json");
   const kiroPreToolUse = kiro.hooks.find(hook => hook.trigger === "PreToolUse");
+  const kiroPostToolUse = kiro.hooks.find(hook => hook.trigger === "PostToolUse");
   assert.equal(kiroPreToolUse.matcher, "*");
+  assert.equal(kiroPostToolUse.matcher, "*");
 });
 
 test("native adapter templates use only the documented placeholder", () => {
@@ -73,7 +77,7 @@ test("adapter renderer emits portable, placeholder-free JSON", () => {
   }
 });
 
-test("Windows adapter and control paths are encoded outside shell syntax", () => {
+test("Windows adapter and entrypoint paths are encoded outside shell syntax", () => {
   const windowsRoot = String.raw`C:\dev\plugin-$HOME-$(whoami)-%TEMP%-&-|-^-!-spaces-'single'-"double"-\`tick\``;
   const expectedEntrypoint = path.win32.join(windowsRoot, "core", "gate.mjs");
 
@@ -85,11 +89,11 @@ test("Windows adapter and control paths are encoded outside shell syntax", () =>
     assertShellPathIsOpaque(command, windowsRoot);
   }
 
-  for (const action of ["pass", "bypass-low"]) {
-    const command = buildEntrypointCommand(expectedEntrypoint, action);
+  for (const argument of ["compatible", "cursor"]) {
+    const command = buildEntrypointCommand(expectedEntrypoint, argument);
     const parsed = parseEntrypointCommand(command);
     assert.equal(parsed.entrypoint, expectedEntrypoint);
-    assert.equal(parsed.argument, action);
+    assert.equal(parsed.argument, argument);
     assertShellPathIsOpaque(command, windowsRoot);
   }
 });
@@ -209,7 +213,6 @@ test("Kiro adapter matches and blocks every documented 3.x mutation tool", () =>
   const config = readJson("adapters/kiro/hooks.json");
   const preHook = config.hooks.find(hook => hook.trigger === "PreToolUse");
   const postHook = config.hooks.find(hook => hook.trigger === "PostToolUse");
-  const postMatcher = new RegExp(postHook.matcher, "i");
   const mutationTools = [
     "fs_write",
     "str_replace",
@@ -219,7 +222,7 @@ test("Kiro adapter matches and blocks every documented 3.x mutation tool", () =>
   ];
 
   assert.equal(preHook.matcher, "*");
-  assert.equal(postMatcher.test("execute_bash"), true);
+  assert.equal(postHook.matcher, "*");
 
   const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-kiro-"));
   const env = {

@@ -37,7 +37,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",

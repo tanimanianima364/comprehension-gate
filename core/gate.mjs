@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildEntrypointCommand } from "./command.mjs";
 import {
   armGateControl,
   clearGateControl,
@@ -16,19 +15,20 @@ import {
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
 const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
+const CONTROL_DIRECTORY = path.join(path.dirname(SCRIPT_PATH), "control");
 
-export function controlCommand(action) {
+export function controlTarget(action) {
   if (!CONTROL_ACTIONS.has(action)) {
     throw new Error(`Unknown control action: ${action}`);
   }
-  return buildEntrypointCommand(SCRIPT_PATH, action);
+  return path.join(CONTROL_DIRECTORY, action);
 }
 
 export function renderInstructions() {
   return fs
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
-    .replaceAll("{{PASS_COMMAND}}", controlCommand("pass"))
-    .replaceAll("{{BYPASS_COMMAND}}", controlCommand("bypass-low"));
+    .replaceAll("{{PASS_COMMAND}}", controlTarget("pass"))
+    .replaceAll("{{BYPASS_COMMAND}}", controlTarget("bypass-low"));
 }
 
 export function handleHook(input, mode = "compatible", options = {}) {
@@ -57,19 +57,17 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "UserPromptSubmit",
-        "Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact pass command only after the answer demonstrates understanding."
+        "Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding."
       );
     }
 
     if (event === "posttooluse") {
-      if (classifyTool(input?.tool_name) === "shell") {
-        const action = controlActionFor(input?.tool_input?.command);
-        if (action) {
-          if (controlCommandSucceeded(input, provider, action)) {
-            completeGateControl(provider, input, action, stateOptions);
-          } else {
-            clearGateControl(provider, input, action, stateOptions);
-          }
+      const action = controlActionFor(input);
+      if (action) {
+        if (controlTransitionSucceeded(input, provider, action)) {
+          completeGateControl(provider, input, action, stateOptions);
+        } else {
+          clearGateControl(provider, input, action, stateOptions);
         }
       }
       return allowResult();
@@ -81,20 +79,13 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name);
-    if (toolKind === "read") {
+    const action = controlActionFor(input);
+    if (action) {
+      armGateControl(provider, input, action, stateOptions);
       return allowResult();
     }
-
-    if (toolKind === "shell") {
-      const command = input?.tool_input?.command;
-      const action = controlActionFor(command);
-      if (action) {
-        armGateControl(provider, input, action, stateOptions);
-        return allowResult();
-      }
-      if (isReadOnlyShellCommand(command)) {
-        return allowResult();
-      }
+    if (toolKind === "read") {
+      return allowResult();
     }
 
     const gate = checkGate(provider, input, stateOptions);
@@ -115,7 +106,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "PostToolUse",
-        `Comprehension Gate failed to record the control command. ${detail} The gate remains pending; do not modify the project.`
+        `Comprehension Gate failed to record the control transition. ${detail} The gate remains pending; do not modify the project.`
       );
     }
     return denyResult(mode, `Comprehension Gate failed closed. ${detail}`);
@@ -129,64 +120,7 @@ export function malformedInputResult(mode = "compatible") {
   );
 }
 
-export function isReadOnlyShellCommand(command) {
-  if (rawExecutableHasPathSeparator(command)) {
-    return false;
-  }
-
-  const tokens = tokenizeConservative(command);
-  if (!tokens || tokens.length === 0) {
-    return false;
-  }
-
-  const executableToken = tokens[0];
-  if (executableToken.includes("/") || executableToken.includes("\\")) {
-    return false;
-  }
-
-  const executable = executableToken.toLowerCase();
-  const args = tokens.slice(1);
-
-  if (executable === "rg" || executable === "ripgrep") {
-    return isReadOnlyRipgrep(args);
-  }
-  if (executable === "find") {
-    return !args.some(arg => FIND_MUTATING_FLAGS.some(flag => arg.startsWith(flag)));
-  }
-  if (executable === "sort") {
-    return isReadOnlySort(args);
-  }
-  if (executable === "tree") {
-    return !args.some(arg => arg === "-o" || arg === "--output" || arg.startsWith("--output=") || /^-o.+/.test(arg));
-  }
-  if (executable === "uniq") {
-    return args.filter(arg => !arg.startsWith("-")).length <= 1;
-  }
-  if (executable === "file") {
-    return !args.some(arg => arg === "-C" || arg === "--compile");
-  }
-  if (executable === "hostname") {
-    return args.every(arg => arg.startsWith("-") || arg.startsWith("/"));
-  }
-  if (executable === "git") {
-    return isReadOnlyGit(args);
-  }
-  if (executable === "go") {
-    return (
-      ["env", "version"].includes((args[0] ?? "").toLowerCase()) &&
-      !args.some(arg => arg === "-w" || arg.startsWith("-w=") || arg === "-u" || arg.startsWith("-u="))
-    );
-  }
-  if (executable === "cargo") {
-    return (args[0] ?? "").toLowerCase() === "version";
-  }
-  if (executable === "command") {
-    return args[0] === "-v" && args.length === 2;
-  }
-  return SIMPLE_READ_COMMANDS.has(executable);
-}
-
-export function controlCommandSucceeded(input, provider, action) {
+export function controlTransitionSucceeded(input, provider, action) {
   if (!CONTROL_ACTIONS.has(action)) {
     return false;
   }
@@ -280,13 +214,16 @@ function responseText(response) {
   }
 }
 
-function controlActionFor(command) {
-  if (typeof command !== "string") {
+function controlActionFor(input) {
+  if (classifyTool(input?.tool_name) !== "read") {
     return null;
   }
-  const trimmed = command.trim();
+  const target = input?.tool_input?.file_path ?? input?.tool_input?.filePath ?? input?.tool_input?.path;
+  if (typeof target !== "string") {
+    return null;
+  }
   for (const action of CONTROL_ACTIONS) {
-    if (trimmed === controlCommand(action)) {
+    if (path.resolve(target) === path.resolve(controlTarget(action))) {
       return action;
     }
   }
@@ -368,7 +305,7 @@ function allowResult() {
 
 function denialReason(stateReason, toolKind) {
   const toolNote = toolKind === "shell"
-    ? " Before the gate passes, use dedicated read/search tools or a conservatively recognized read-only shell command."
+    ? " Shell commands are unavailable before the gate passes; use dedicated native read/search tools."
     : toolKind === "other"
       ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
       : "";
@@ -376,297 +313,10 @@ function denialReason(stateReason, toolKind) {
     `Comprehension Gate is not satisfied for the current user turn (${stateReason}).`,
     "Classify it silently: LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer.",
     "Ask the minimum codebase-specific question(s) and wait for the user to demonstrate understanding in their own words.",
-    `After mastery, run this exact standalone command: ${controlCommand("pass")}`,
-    `For a genuinely LOW change only, run this exact standalone command: ${controlCommand("bypass-low")}`,
+    `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
+    `For a genuinely LOW change only, read this exact control target with a native file-reading tool: ${controlTarget("bypass-low")}`,
     toolNote
   ].join(" ").trim();
-}
-
-function tokenizeConservative(command) {
-  if (typeof command !== "string" || command.trim() === "") {
-    return null;
-  }
-
-  const tokens = [];
-  let token = "";
-  let quote = null;
-  let escaping = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const character = command[index];
-
-    if (escaping) {
-      token += character;
-      escaping = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaping = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) {
-        quote = null;
-      } else {
-        if (quote === '"' && (character === "$" || character === "`")) {
-          return null;
-        }
-        token += character;
-      }
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (character === "\n" || character === "\r") {
-        return null;
-      }
-      if (token) {
-        tokens.push(token);
-        token = "";
-      }
-      continue;
-    }
-    if (";&|><`$#(){}".includes(character)) {
-      return null;
-    }
-    token += character;
-  }
-
-  if (escaping || quote) {
-    return null;
-  }
-  if (token) {
-    tokens.push(token);
-  }
-  return tokens;
-}
-
-function rawExecutableHasPathSeparator(command) {
-  if (typeof command !== "string") {
-    return false;
-  }
-
-  let quote = null;
-  let started = false;
-  for (const character of command) {
-    if (!started && /\s/.test(character)) {
-      continue;
-    }
-    started = true;
-    if (!quote && /\s/.test(character)) {
-      break;
-    }
-    if (character === "'" || character === '"') {
-      if (quote === character) {
-        quote = null;
-      } else if (!quote) {
-        quote = character;
-      }
-      continue;
-    }
-    if (character === "/" || character === "\\") {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isReadOnlyGit(args) {
-  if (
-    args[0] !== "--no-pager" ||
-    args[1] !== "-c" ||
-    args[2] !== "core.fsmonitor=false"
-  ) {
-    return false;
-  }
-
-  const commandArgs = args.slice(3);
-  const subcommand = (commandArgs[0] ?? "").toLowerCase();
-  const subcommandArgs = commandArgs.slice(1);
-  if (args.some(arg => arg === "--output" || arg.startsWith("--output="))) {
-    return false;
-  }
-  if (GIT_DIFF_FAMILY.has(subcommand)) {
-    const pathspecSeparator = subcommandArgs.indexOf("--");
-    const optionArgs = pathspecSeparator === -1
-      ? subcommandArgs
-      : subcommandArgs.slice(0, pathspecSeparator);
-    const disablesExternalDiff = optionArgs.includes("--no-ext-diff");
-    const disablesTextconv = optionArgs.includes("--no-textconv");
-    const disablesSignature = subcommand === "diff" || optionArgs.includes("--no-show-signature");
-    const malformedDisable = subcommandArgs.some(arg =>
-      arg.startsWith("--no-ext-diff=") ||
-      arg.startsWith("--no-textconv=") ||
-      arg.startsWith("--no-show-signature=")
-    );
-    const enablesHelper = subcommandArgs.some(arg =>
-      matchesLongOptionPrefix(arg, "--ext-diff") ||
-      matchesLongOptionPrefix(arg, "--textconv") ||
-      matchesLongOptionPrefix(arg, "--show-signature") ||
-      arg.includes("%G")
-    );
-    return disablesExternalDiff && disablesTextconv && disablesSignature && !malformedDisable && !enablesHelper;
-  }
-  if (subcommand === "cat-file") {
-    return !subcommandArgs.some(arg =>
-      matchesLongOptionPrefix(arg, "--filters") ||
-      matchesLongOptionPrefix(arg, "--textconv")
-    );
-  }
-  if (subcommand === "grep") {
-    return !subcommandArgs.some(arg =>
-      matchesLongOptionPrefix(arg, "--textconv") ||
-      matchesLongOptionPrefix(arg, "--open-files-in-pager") ||
-      /^-[^-]*O/.test(arg)
-    );
-  }
-  if (GIT_READ_SUBCOMMANDS.has(subcommand)) {
-    return true;
-  }
-  if (subcommand === "tag") {
-    const tagArgs = subcommandArgs;
-    if (tagArgs.length === 0) {
-      return true;
-    }
-    const hasListMode = tagArgs[0] === "-l" || tagArgs[0] === "--list";
-    return hasListMode && tagArgs.slice(1).every(arg => !arg.startsWith("-"));
-  }
-  if (subcommand === "branch") {
-    const branchArgs = subcommandArgs;
-    return (
-      branchArgs.length === 0 ||
-      (branchArgs.length === 1 && branchArgs[0] === "--show-current")
-    );
-  }
-  if (subcommand === "config") {
-    const allowed = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope"]);
-    const mutating = new Set(["--add", "--edit", "-e", "--remove-section", "--rename-section", "--replace-all", "--unset", "--unset-all"]);
-    return subcommandArgs.some(arg => allowed.has(arg)) && !subcommandArgs.some(arg => mutating.has(arg));
-  }
-  if (subcommand === "remote") {
-    const operation = (subcommandArgs[0] ?? "").toLowerCase();
-    if (operation === "show") {
-      return subcommandArgs[1] === "-n";
-    }
-    return operation === "" || operation === "-v" || operation === "get-url";
-  }
-  if (subcommand === "worktree") {
-    return (subcommandArgs[0] ?? "").toLowerCase() === "list";
-  }
-  return false;
-}
-
-function isReadOnlySort(args) {
-  let optionsEnabled = true;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (
-      matchesWindowsOptionPrefix(argument, "/output") ||
-      matchesWindowsOptionPrefix(argument, "/temporary")
-    ) {
-      return false;
-    }
-    if (!optionsEnabled) {
-      continue;
-    }
-    if (argument === "--") {
-      optionsEnabled = false;
-      continue;
-    }
-    if (argument === "-" || !argument.startsWith("-")) {
-      continue;
-    }
-    if (argument.startsWith("--")) {
-      const equalsIndex = argument.indexOf("=");
-      const option = equalsIndex === -1 ? argument : argument.slice(0, equalsIndex);
-      const attachedValue = equalsIndex === -1 ? null : argument.slice(equalsIndex + 1);
-
-      if (SORT_LONG_FLAGS.has(option)) {
-        if (option === "--check" && attachedValue !== null) {
-          if (!SORT_CHECK_VALUES.has(attachedValue)) {
-            return false;
-          }
-        } else if (attachedValue !== null) {
-          return false;
-        }
-        continue;
-      }
-      if (!SORT_LONG_VALUE_OPTIONS.has(option)) {
-        return false;
-      }
-      if (attachedValue !== null) {
-        if (attachedValue === "") {
-          return false;
-        }
-        continue;
-      }
-      if (index + 1 >= args.length) {
-        return false;
-      }
-      index += 1;
-      continue;
-    }
-
-    const shortOptions = parseSortShortOptions(argument);
-    if (!shortOptions.valid) {
-      return false;
-    }
-    if (shortOptions.consumesNext) {
-      if (index + 1 >= args.length) {
-        return false;
-      }
-      index += 1;
-    }
-  }
-
-  return true;
-}
-
-function isReadOnlyRipgrep(args) {
-  if (args[0] !== "--no-config") {
-    return false;
-  }
-
-  return !args.slice(1).some(arg =>
-    arg === "--pre" ||
-    arg.startsWith("--pre=") ||
-    arg === "--search-zip" ||
-    arg.startsWith("--search-zip=") ||
-    arg === "--hostname-bin" ||
-    arg.startsWith("--hostname-bin=") ||
-    /^-[^-]*z/.test(arg)
-  );
-}
-
-function parseSortShortOptions(argument) {
-  for (let index = 1; index < argument.length; index += 1) {
-    const option = argument[index];
-    if (SORT_SHORT_FLAGS.has(option)) {
-      continue;
-    }
-    if (!SORT_SHORT_VALUE_OPTIONS.has(option)) {
-      return { valid: false, consumesNext: false };
-    }
-    return {
-      valid: true,
-      consumesNext: index === argument.length - 1
-    };
-  }
-  return { valid: true, consumesNext: false };
-}
-
-function matchesLongOptionPrefix(argument, option) {
-  const candidate = argument.split("=", 1)[0];
-  return candidate.length > 2 && candidate.startsWith("--") && option.startsWith(candidate);
-}
-
-function matchesWindowsOptionPrefix(argument, option) {
-  const candidate = argument.split(/[=:]/, 1)[0].toLowerCase();
-  return candidate.length >= 2 && candidate.startsWith("/") && option.startsWith(candidate);
 }
 
 const WRITE_TOOLS = new Set([
@@ -720,106 +370,8 @@ const SHELL_TOOLS = new Set([
   "shell"
 ]);
 
-const SIMPLE_READ_COMMANDS = new Set([
-  "[",
-  "basename",
-  "cat",
-  "compare-object",
-  "df",
-  "dir",
-  "dirname",
-  "du",
-  "echo",
-  "get-childitem",
-  "get-command",
-  "get-content",
-  "get-item",
-  "get-location",
-  "grep",
-  "head",
-  "id",
-  "jq",
-  "ls",
-  "md5sum",
-  "measure-object",
-  "printenv",
-  "ps",
-  "pwd",
-  "readlink",
-  "realpath",
-  "resolve-path",
-  "select-string",
-  "sha256sum",
-  "stat",
-  "tail",
-  "test",
-  "type",
-  "uname",
-  "wc",
-  "where",
-  "which",
-  "whoami"
-]);
-
-const FIND_MUTATING_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"];
-
-const SORT_SHORT_FLAGS = new Set("bdfgiMhnRrVcCmsuz");
-const SORT_SHORT_VALUE_OPTIONS = new Set(["k", "S", "t"]);
-const SORT_LONG_FLAGS = new Set([
-  "--check",
-  "--debug",
-  "--dictionary-order",
-  "--general-numeric-sort",
-  "--help",
-  "--human-numeric-sort",
-  "--ignore-case",
-  "--ignore-leading-blanks",
-  "--ignore-nonprinting",
-  "--merge",
-  "--month-sort",
-  "--numeric-sort",
-  "--random-sort",
-  "--reverse",
-  "--stable",
-  "--unique",
-  "--version",
-  "--version-sort",
-  "--zero-terminated"
-]);
-const SORT_CHECK_VALUES = new Set(["diagnose-first", "quiet", "silent"]);
-const SORT_LONG_VALUE_OPTIONS = new Set([
-  "--batch-size",
-  "--buffer-size",
-  "--field-separator",
-  "--files0-from",
-  "--key",
-  "--parallel",
-  "--random-source",
-  "--sort"
-]);
-
-const GIT_READ_SUBCOMMANDS = new Set([
-  "describe",
-  "ls-files",
-  "ls-tree",
-  "merge-base",
-  "name-rev",
-  "rev-list",
-  "rev-parse",
-  "show-ref"
-]);
-
-const GIT_DIFF_FAMILY = new Set(["diff", "log", "show"]);
-
 export async function main() {
-  const [modeOrAction = "compatible"] = process.argv.slice(2);
-  if (CONTROL_ACTIONS.has(modeOrAction)) {
-    const marker = modeOrAction === "pass"
-      ? "<!-- comprehension-gate:pass -->"
-      : "<!-- comprehension-gate:bypass-low -->";
-    process.stdout.write(`${marker}\n`);
-    return;
-  }
+  const [mode = "compatible"] = process.argv.slice(2);
 
   let stdin = "";
   for await (const chunk of process.stdin) {
@@ -828,9 +380,9 @@ export async function main() {
 
   let result;
   try {
-    result = handleHook(JSON.parse(stdin), modeOrAction);
+    result = handleHook(JSON.parse(stdin), mode);
   } catch {
-    result = malformedInputResult(modeOrAction);
+    result = malformedInputResult(mode);
   }
   if (result.stdout) {
     process.stdout.write(result.stdout);

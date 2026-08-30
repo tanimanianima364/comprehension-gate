@@ -5,15 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  controlCommand,
-  controlCommandSucceeded,
+  controlTarget,
+  controlTransitionSucceeded,
   handleHook,
-  isReadOnlyShellCommand,
   malformedInputResult
 } from "../core/gate.mjs";
 import { readGateState, stateFilePath } from "../core/state.mjs";
 
-test("compatible flow blocks writes until the exact pass command runs", () => {
+test("compatible flow blocks shell and writes until the native pass control completes", () => {
   const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
   const base = { session_id: "session-1", turn_id: "turn-1" };
 
@@ -33,15 +32,15 @@ test("compatible flow blocks writes until the exact pass command runs", () => {
   );
   assert.equal(JSON.parse(blocked.stdout).hookSpecificOutput.permissionDecision, "deny");
 
-  const readOnly = handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rg --no-config --files" } },
+  const shellBlocked = handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rg --files" } },
     "compatible",
     fixture
   );
-  assert.equal(readOnly.stdout, "");
+  assertDenied(shellBlocked, "compatible", "pending shell");
 
   const pass = handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "tool-pass", tool_input: { command: controlCommand("pass") } },
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "tool-pass", tool_input: controlInput("pass") },
     "compatible",
     fixture
   );
@@ -58,9 +57,9 @@ test("compatible flow blocks writes until the exact pass command runs", () => {
     {
       ...base,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "tool-pass",
-      tool_input: { command: controlCommand("pass") },
+      tool_input: controlInput("pass"),
       tool_response: {
         stdout: "<!-- comprehension-gate:pass -->\n",
         stderr: "",
@@ -102,6 +101,7 @@ test("pending gates deny MCP tools across providers and restore them after pass"
       preEvent: "PreToolUse",
       postEvent: "PostToolUse",
       readTool: "Read",
+      controlField: "file_path",
       shellTool: "Bash",
       mcpTool: "mcp__filesystem__write_file",
       response: { stdout: "<!-- comprehension-gate:pass -->" }
@@ -114,7 +114,8 @@ test("pending gates deny MCP tools across providers and restore them after pass"
       startEvent: "sessionStart",
       preEvent: "preToolUse",
       postEvent: "postToolUse",
-      readTool: "Grep",
+      readTool: "Read",
+      controlField: "path",
       shellTool: "Shell",
       mcpTool: "MCP:filesystem.write_file",
       output: JSON.stringify({ exitCode: 0, stdout: "<!-- comprehension-gate:pass -->" })
@@ -128,6 +129,7 @@ test("pending gates deny MCP tools across providers and restore them after pass"
       preEvent: "preToolUse",
       postEvent: "postToolUse",
       readTool: "fs_read",
+      controlField: "path",
       shellTool: "execute_bash",
       mcpTool: "@filesystem/write_file",
       response: { success: true, result: ["<!-- comprehension-gate:pass -->"] }
@@ -155,15 +157,14 @@ test("pending gates deny MCP tools across providers and restore them after pass"
     );
     assertDenied(pendingMcp, item.mode, `${item.name}: pending MCP`);
 
-    const command = controlCommand("pass");
     const toolUseId = `${item.name}-pass`;
     const arm = handleHook(
       {
         ...item.base,
         hook_event_name: item.preEvent,
-        tool_name: item.shellTool,
+        tool_name: item.readTool,
         tool_use_id: toolUseId,
-        tool_input: { command }
+        tool_input: controlInput("pass", item.controlField)
       },
       item.mode,
       item.fixture
@@ -174,9 +175,9 @@ test("pending gates deny MCP tools across providers and restore them after pass"
       {
         ...item.base,
         hook_event_name: item.postEvent,
-        tool_name: item.shellTool,
+        tool_name: item.readTool,
         tool_use_id: toolUseId,
-        tool_input: { command },
+        tool_input: controlInput("pass", item.controlField),
         ...(item.output === undefined
           ? { tool_response: item.response }
           : { tool_output: item.output })
@@ -192,6 +193,19 @@ test("pending gates deny MCP tools across providers and restore them after pass"
     );
     assert.equal(passedMcp.stdout, "", `${item.name}: passed MCP`);
     assert.equal(passedMcp.exitCode, 0, `${item.name}: passed MCP`);
+
+    const passedShell = handleHook(
+      {
+        ...item.base,
+        hook_event_name: item.preEvent,
+        tool_name: item.shellTool,
+        tool_input: { command: "cat README.md" }
+      },
+      item.mode,
+      item.fixture
+    );
+    assert.equal(passedShell.stdout, "", `${item.name}: passed shell`);
+    assert.equal(passedShell.exitCode, 0, `${item.name}: passed shell`);
   }
 });
 
@@ -209,14 +223,13 @@ test("first PreToolUse initializes missing state and permits a later pass", () =
   assert.equal(pending.ok, true);
   assert.equal(pending.state.status, "pending");
 
-  const command = controlCommand("pass");
   const arm = handleHook(
     {
       ...base,
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "missing-pass",
-      tool_input: { command }
+      tool_input: controlInput("pass")
     },
     "compatible",
     fixture
@@ -226,9 +239,9 @@ test("first PreToolUse initializes missing state and permits a later pass", () =
     {
       ...base,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "missing-pass",
-      tool_input: { command },
+      tool_input: controlInput("pass"),
       tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
     },
     "compatible",
@@ -292,23 +305,29 @@ test("invalid and unreadable state remain fail-closed at PreToolUse", () => {
   assert.equal(writeAttempts, 0);
 });
 
-test("control commands must be standalone exact matches", () => {
+test("only exact native control targets arm the gate", () => {
   const fixture = createFixture();
   const base = { session_id: "session-2", hook_event_name: "SessionStart", source: "startup" };
   handleHook(base, "compatible", fixture);
 
-  const result = handleHook(
+  const read = handleHook(
     {
       session_id: "session-2",
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
-      tool_input: { command: `${controlCommand("pass")} && touch bypassed` }
+      tool_name: "Read",
+      tool_input: { file_path: `${controlTarget("pass")}-other` }
     },
     "compatible",
     fixture
   );
 
-  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(read.stdout, "");
+  const write = handleHook(
+    { session_id: "session-2", hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    "compatible",
+    fixture
+  );
+  assertDenied(write, "compatible", "non-control read did not arm the gate");
 });
 
 test("a failed Codex control result cannot pass the gate", () => {
@@ -325,9 +344,9 @@ test("a failed Codex control result cannot pass the gate", () => {
     {
       session_id: base.session_id,
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "failed-tool",
-      tool_input: { command: controlCommand("pass") }
+      tool_input: controlInput("pass")
     },
     "compatible",
     fixture
@@ -338,9 +357,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "failed-tool",
-      tool_input: { command: controlCommand("pass") },
+      tool_input: controlInput("pass"),
       tool_response: { exit_code: 1, output: "Process exited with code 1" }
     },
     "compatible",
@@ -359,9 +378,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "successful-tool",
-      tool_input: { command: controlCommand("pass") }
+      tool_input: controlInput("pass")
     },
     "compatible",
     fixture
@@ -371,9 +390,9 @@ test("a failed Codex control result cannot pass the gate", () => {
       session_id: base.session_id,
       turn_id: base.turn_id,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "successful-tool",
-      tool_input: { command: controlCommand("pass") },
+      tool_input: controlInput("pass"),
       tool_response: {
         exit_code: 0,
         output: "<!-- comprehension-gate:pass -->\n"
@@ -398,9 +417,9 @@ test("a control completion armed in an earlier turn cannot pass a reset gate", (
     {
       ...first,
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "old-tool",
-      tool_input: { command: controlCommand("pass") }
+      tool_input: controlInput("pass")
     },
     "compatible",
     fixture
@@ -416,9 +435,9 @@ test("a control completion armed in an earlier turn cannot pass a reset gate", (
     {
       ...first,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "old-tool",
-      tool_input: { command: controlCommand("pass") },
+      tool_input: controlInput("pass"),
       tool_response: { exit_code: 0, output: "<!-- comprehension-gate:pass -->" }
     },
     "compatible",
@@ -506,8 +525,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "preToolUse",
-      tool_name: "execute_bash",
-      tool_input: { command: controlCommand("pass") }
+      tool_name: "fs_read",
+      tool_input: controlInput("pass")
     },
     "kiro",
     fixture
@@ -516,8 +535,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "postToolUse",
-      tool_name: "execute_bash",
-      tool_input: { command: controlCommand("pass") },
+      tool_name: "fs_read",
+      tool_input: controlInput("pass"),
       tool_response: {
         success: false,
         result: ["<!-- comprehension-gate:pass -->"]
@@ -539,8 +558,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "preToolUse",
-      tool_name: "execute_bash",
-      tool_input: { command: controlCommand("pass") }
+      tool_name: "fs_read",
+      tool_input: controlInput("pass")
     },
     "kiro",
     fixture
@@ -549,8 +568,8 @@ test("Kiro requires success true and the expected marker", () => {
     {
       ...base,
       hook_event_name: "postToolUse",
-      tool_name: "execute_bash",
-      tool_input: { command: controlCommand("pass") },
+      tool_name: "fs_read",
+      tool_input: controlInput("pass"),
       tool_response: {
         success: true,
         result: ["<!-- comprehension-gate:pass -->"]
@@ -571,7 +590,7 @@ test("Kiro requires success true and the expected marker", () => {
 
 test("provider result parsing rejects missing markers and explicit failures", () => {
   assert.equal(
-    controlCommandSucceeded(
+    controlTransitionSucceeded(
       { tool_response: { exit_code: 0, output: "no marker" } },
       "codex",
       "pass"
@@ -579,7 +598,7 @@ test("provider result parsing rejects missing markers and explicit failures", ()
     false
   );
   assert.equal(
-    controlCommandSucceeded(
+    controlTransitionSucceeded(
       { tool_output: JSON.stringify({ exitCode: 1, stdout: "<!-- comprehension-gate:pass -->" }) },
       "cursor",
       "pass"
@@ -587,7 +606,7 @@ test("provider result parsing rejects missing markers and explicit failures", ()
     false
   );
   assert.equal(
-    controlCommandSucceeded(
+    controlTransitionSucceeded(
       { tool_output: JSON.stringify({ exitCode: 0, stdout: "<!-- comprehension-gate:pass -->" }) },
       "cursor",
       "pass"
@@ -609,9 +628,9 @@ test("a failed prompt reset blocks submission and invalidates an earlier pass", 
     {
       ...base,
       hook_event_name: "PreToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "reset-pass",
-      tool_input: { command: controlCommand("pass") }
+      tool_input: controlInput("pass")
     },
     "compatible",
     fixture
@@ -620,9 +639,9 @@ test("a failed prompt reset blocks submission and invalidates an earlier pass", 
     {
       ...base,
       hook_event_name: "PostToolUse",
-      tool_name: "Bash",
+      tool_name: "Read",
       tool_use_id: "reset-pass",
-      tool_input: { command: controlCommand("pass") },
+      tool_input: controlInput("pass"),
       tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
     },
     "compatible",
@@ -679,507 +698,147 @@ test("command entrypoint consumes hook JSON over stdin", () => {
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.hookEventName, "SessionStart");
 });
 
-test("generated control commands execute the exact standalone markers", () => {
+test("native control targets contain the exact standalone markers", () => {
+  assert.throws(() => controlTarget("unknown"), /Unknown control action/);
   for (const [action, marker] of [
     ["pass", "<!-- comprehension-gate:pass -->\n"],
     ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
   ]) {
-    const result = spawnSync(controlCommand(action), {
-      encoding: "utf8",
-      shell: process.platform === "win32" ? true : "/bin/sh"
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, marker);
-  }
-});
-
-test("shell policy is conservative", () => {
-  const allowed = [
-    "pwd",
-    "rg --no-config --files",
-    "ripgrep --no-config needle README.md",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv -- src/app.js",
-    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature --oneline",
-    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv --no-show-signature HEAD",
-    "git --no-pager -c core.fsmonitor=false cat-file -p HEAD",
-    "git --no-pager -c core.fsmonitor=false grep needle -- src",
-    "git --no-pager -c core.fsmonitor=false rev-parse HEAD",
-    "git --no-pager -c core.fsmonitor=false tag --list",
-    "git --no-pager -c core.fsmonitor=false branch --show-current",
-    "git --no-pager -c core.fsmonitor=false config --get user.name",
-    "git --no-pager -c core.fsmonitor=false remote -v",
-    "git --no-pager -c core.fsmonitor=false remote show -n origin",
-    "git --no-pager -c core.fsmonitor=false worktree list",
-    "sort input.txt",
-    "sort -nr -k2,2 input.txt",
-    "sort -S 64K --parallel=2 input.txt",
-    "sort --reverse --key 2,2 input.txt",
-    "sort -tT input.txt",
-    "sort -- --compress-program=filename",
-    "sort /R input.txt",
-    "sort /M 1024 input.txt",
-    "sort /L C input.txt",
-    "sort /REC 4096 input.txt",
-    "find src -maxdepth 2 -type f",
-    "Get-Content README.md"
-  ];
-  const denied = [
-    "./cat README.md",
-    "/tmp/cat README.md",
-    "./rg --no-config --files",
-    "'C:\\tools\\cat' README.md",
-    "\\cat README.md",
-    "c\\at README.md",
-    "\\rg --no-config --files",
-    "touch file",
-    "cat source > target",
-    "rg --files",
-    "ripgrep needle .",
-    "rg -- --no-config",
-    "rg --no-config --pre=./scripts/mutate needle .",
-    "rg --no-config --pre ./scripts/mutate needle .",
-    "rg --no-config --search-zip needle archive.gz",
-    "rg --no-config -z needle archive.gz",
-    "rg --no-config -nz needle archive.gz",
-    "rg --no-config --hostname-bin=./scripts/hostname needle .",
-    "rg --no-config --hostname-bin ./scripts/hostname needle .",
-    "rg --files | xargs rm",
-    "find . -delete",
-    "git checkout main",
-    "git branch new-branch",
-    "git branch --edit-description",
-    "git branch --set-upstream-to=origin/main",
-    "git tag v1.0.0",
-    "git diff --output=patch.txt",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --output=patch.txt",
-    "git status --short",
-    "git diff -- src/app.js",
-    "git --no-pager diff --no-ext-diff -- src/app.js",
-    "git --no-pager -c core.fsmonitor=true diff --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false diff --no-textconv -- src/app.js",
-    "git --no-pager -c core.fsmonitor=false diff --ext-diff --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --ext-diff",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --textconv",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff=false --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false diff --no-textconv=false --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false diff -- --no-ext-diff --no-textconv",
-    "git --paginate diff --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false log --oneline",
-    "git --no-pager -c core.fsmonitor=false show HEAD",
-    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --oneline",
-    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv HEAD",
-    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature --show-signature",
-    "git --no-pager -c core.fsmonitor=false show --show-signature --no-ext-diff --no-textconv --no-show-signature",
-    "git --no-pager -c core.fsmonitor=false log --no-ext-diff --no-textconv --no-show-signature '--format=%G?'",
-    "git --no-pager -c core.fsmonitor=false cat-file --filters HEAD:README.md",
-    "git --no-pager -c core.fsmonitor=false cat-file --filt HEAD:README.md",
-    "git --no-pager -c core.fsmonitor=false cat-file --textconv HEAD:README.md",
-    "git --no-pager -c core.fsmonitor=false grep --textconv needle",
-    "git --no-pager -c core.fsmonitor=false grep -Osh needle",
-    "git --no-pager -c core.fsmonitor=false grep -nOcat needle",
-    "git --no-pager -c core.fsmonitor=false grep -inOsh needle",
-    "git --no-pager -c core.fsmonitor=false grep --open-files-in-pager=sh needle",
-    "git --no-pager -c core.fsmonitor=false grep --open=sh needle",
-    "git --no-pager -c core.fsmonitor=false tag --list -d",
-    "git --no-pager -c core.fsmonitor=false tag --list '--format=%(signature:grade)'",
-    "git --no-pager -c core.fsmonitor=false for-each-ref",
-    "git --no-pager -c core.fsmonitor=false branch new-branch",
-    "git --no-pager -c core.fsmonitor=false config --get user.name --unset user.name",
-    "git --no-pager -c core.fsmonitor=false remote show origin",
-    "git --no-pager -c core.fsmonitor=false remote show -- -n origin",
-    "git --no-pager -c core.fsmonitor=false worktree add ../other",
-    "go env -w GOPATH=/tmp/go",
-    "go list -mod=mod ./...",
-    "sort --output sorted.txt input.txt",
-    "sort -o changed.txt input.txt",
-    "sort -ochanged.txt input.txt",
-    "sort /O sorted.txt input.txt",
-    "sort /OUTPUT sorted.txt input.txt",
-    "sort /out sorted.txt input.txt",
-    "sort /T . input.txt",
-    "sort /temporary . input.txt",
-    "sort /TEMP . input.txt",
-    "sort -S 1K --compress-program=./scripts/mutate input.txt",
-    "sort --compress-program ./scripts/mutate input.txt",
-    "sort --compress-prog=./scripts/mutate input.txt -S 1K",
-    "sort --reverse --compress-program=./scripts/mutate input.txt",
-    "sort --compress-program=./scripts/mutate --reverse input.txt",
-    "sort --not-a-real-option input.txt",
-    "sort -X input.txt",
-    "sort -rochanged.txt input.txt",
-    "sort --out=changed.txt input.txt",
-    "sort -T . input.txt",
-    "sort -T. input.txt",
-    "sort -nT. input.txt",
-    "sort --temporary-directory . input.txt",
-    "sort --temporary-directory=. input.txt",
-    "sort --temp=. input.txt",
-    "tree -o tree.txt .",
-    "uniq input.txt output.txt",
-    "node -e \"require('fs').writeFileSync('x','y')\"",
-    "echo $(touch bypassed)"
-  ];
-
-  for (const command of allowed) {
-    assert.equal(isReadOnlyShellCommand(command), true, command);
-  }
-  for (const command of denied) {
-    assert.equal(isReadOnlyShellCommand(command), false, command);
-  }
-});
-
-test("GNU sort helper execution is reachable but denied by the gate", t => {
-  const version = spawnSync("sort", ["--version"], { encoding: "utf8" });
-  if (version.status !== 0 || !version.stdout.startsWith("sort (GNU coreutils)")) {
-    t.skip("GNU sort is unavailable");
-    return;
+    assert.equal(fs.readFileSync(controlTarget(action), "utf8"), marker);
+    assert.doesNotMatch(controlTarget(action), /(^|[\\/])node(?:\.exe)?(?:$|\s)/i);
   }
 
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-sort-"));
-  const helper = path.join(directory, "compress-helper.mjs");
-  const sentinel = path.join(directory, "compress-helper-ran");
-  const input = path.join(directory, "input.txt");
-  fs.writeFileSync(
-    helper,
-    [
-      "#!/usr/bin/env node",
-      'import fs from "node:fs";',
-      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
-      "process.stdin.pipe(process.stdout);"
-    ].join("\n")
-  );
-  fs.chmodSync(helper, 0o700);
-  fs.writeFileSync(
-    input,
-    Array.from({ length: 10000 }, (_, index) => `${String(10000 - index).padStart(8, "0")} payload\n`).join("")
-  );
-
-  const sortArgs = ["-S", "64K", `--compress-program=${helper}`, input];
-  const direct = spawnSync("sort", sortArgs, {
-    stdio: ["ignore", "ignore", "pipe"]
-  });
-  assert.equal(direct.status, 0, direct.stderr.toString());
-  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute the compression helper");
-  fs.unlinkSync(sentinel);
-
-  const command = `sort -S 64K --compress-program=${helper} ${input}`;
-  assert.equal(isReadOnlyShellCommand(command), false);
-  const fixture = createFixture();
-  const denied = handleHook(
+  const shellRead = handleHook(
     {
-      session_id: "sort-helper",
+      session_id: "shell-control-denied",
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
-      tool_input: { command }
-    },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
-  assert.equal(fs.existsSync(sentinel), false, "denied hook executed the helper");
-});
-
-test("path-qualified allowlist command names are denied before execution", t => {
-  if (process.platform === "win32") {
-    t.skip("POSIX executable fixture is unavailable on Windows");
-    return;
-  }
-
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-local-command-"));
-  const helper = path.join(directory, "cat");
-  const sentinel = path.join(directory, "local-cat-ran");
-  fs.writeFileSync(
-    helper,
-    [
-      "#!/usr/bin/env node",
-      'import fs from "node:fs";',
-      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
-      'process.stdout.write("side effect\\n");'
-    ].join("\n")
-  );
-  fs.chmodSync(helper, 0o700);
-
-  const direct = spawnSync("./cat", ["README.md"], {
-    cwd: directory,
-    encoding: "utf8"
-  });
-  assert.equal(direct.status, 0, direct.stderr);
-  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute project-local cat");
-  fs.unlinkSync(sentinel);
-
-  for (const command of [
-    "./cat README.md",
-    "\\cat README.md",
-    "c\\at README.md",
-    "\\rg --no-config --files"
-  ]) {
-    assert.equal(isReadOnlyShellCommand(command), false, command);
-    const denied = handleHook(
-      {
-        session_id: "path-qualified-shell",
-        hook_event_name: "PreToolUse",
-        tool_name: "Bash",
-        tool_input: { command }
-      },
-      "compatible",
-      createFixture()
-    );
-    assert.equal(
-      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
-      "deny",
-      command
-    );
-  }
-  assert.equal(fs.existsSync(sentinel), false, "denied hook executed project-local cat");
-});
-
-test("ripgrep config preprocessors are reachable but require no-config through the gate", t => {
-  if (spawnSync("rg", ["--version"], { encoding: "utf8" }).status !== 0) {
-    t.skip("ripgrep is unavailable");
-    return;
-  }
-
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-rg-"));
-  const helper = path.join(directory, "preprocess.mjs");
-  const sentinel = path.join(directory, "preprocess-ran");
-  const config = path.join(directory, "ripgreprc");
-  const input = path.join(directory, "input.txt");
-  fs.writeFileSync(
-    helper,
-    [
-      "#!/usr/bin/env node",
-      'import fs from "node:fs";',
-      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
-      'process.stdout.write(fs.readFileSync(process.argv[2], "utf8"));'
-    ].join("\n")
-  );
-  fs.chmodSync(helper, 0o700);
-  fs.writeFileSync(config, `--pre=${helper}\n`);
-  fs.writeFileSync(input, "needle\n");
-
-  const env = { ...process.env, RIPGREP_CONFIG_PATH: config };
-  const unsafe = spawnSync("rg", ["needle", input], { encoding: "utf8", env });
-  assert.equal(unsafe.status, 0, unsafe.stderr);
-  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute configured preprocessor");
-  fs.unlinkSync(sentinel);
-
-  const guarded = spawnSync("rg", ["--no-config", "needle", input], { encoding: "utf8", env });
-  assert.equal(guarded.status, 0, guarded.stderr);
-  assert.equal(fs.existsSync(sentinel), false, "no-config did not suppress configured preprocessor");
-
-  assert.equal(isReadOnlyShellCommand("rg needle input.txt"), false);
-  assert.equal(isReadOnlyShellCommand("rg --no-config needle input.txt"), true);
-  const denied = handleHook(
-    {
-      session_id: "rg-config",
-      hook_event_name: "PreToolUse",
-      tool_name: "Bash",
-      tool_input: { command: "rg needle input.txt" }
+      tool_input: { command: `cat ${controlTarget("pass")}` }
     },
     "compatible",
     createFixture()
   );
-  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
-  assert.equal(fs.existsSync(sentinel), false, "denied hook executed configured preprocessor");
+  assertDenied(shellRead, "compatible", "control target through shell");
 });
 
-test("pending PreToolUse allows ordinary sort and denies unsafe sort options", () => {
+test("LOW bypass completes through the native read control", () => {
   const fixture = createFixture();
-  const base = {
-    session_id: "sort-pretool",
-    hook_event_name: "PreToolUse",
-    tool_name: "Bash"
-  };
-  const allowed = handleHook(
-    { ...base, tool_input: { command: "sort -nr -S 64K input.txt" } },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "");
+  const base = { session_id: "native-low-control" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
 
-  for (const command of [
-    "sort --compress-program=./scripts/mutate input.txt",
-    "sort --compress-program ./scripts/mutate input.txt",
-    "sort --comp=./scripts/mutate input.txt",
-    "sort /t . input.txt",
-    "sort /TEMP . input.txt",
-    "sort /out sorted.txt input.txt",
-    "sort -rochanged.txt input.txt",
-    "sort -nT. input.txt",
-    "sort --not-a-real-option input.txt"
-  ]) {
-    const denied = handleHook(
-      { ...base, tool_input: { command } },
-      "compatible",
-      fixture
-    );
-    assert.equal(
-      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
-      "deny",
-      command
-    );
-  }
-});
-
-test("guarded git diff suppresses configured textconv and fsmonitor processes", t => {
-  if (spawnSync("git", ["--version"], { encoding: "utf8" }).status !== 0) {
-    t.skip("git is unavailable");
-    return;
-  }
-
-  const repository = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-git-"));
-  const helper = path.join(repository, "textconv-helper.mjs");
-  const sentinel = path.join(repository, "textconv-ran");
-  const fsmonitorHelper = path.join(repository, "fsmonitor-helper.mjs");
-  const fsmonitorSentinel = path.join(repository, "fsmonitor-ran");
-  fs.writeFileSync(
-    helper,
-    [
-      'import fs from "node:fs";',
-      "const [sentinel, input] = process.argv.slice(2);",
-      'fs.writeFileSync(sentinel, "ran");',
-      'process.stdout.write(fs.readFileSync(input, "utf8"));'
-    ].join("\n")
-  );
-  fs.writeFileSync(
-    fsmonitorHelper,
-    [
-      'import fs from "node:fs";',
-      "const sentinel = process.argv[2];",
-      'fs.writeFileSync(sentinel, "ran");',
-      'process.stdout.write("0\\n");'
-    ].join("\n")
-  );
-  fs.writeFileSync(path.join(repository, ".gitattributes"), "*.txt diff=sideeffect\n");
-  fs.writeFileSync(path.join(repository, "sample.txt"), "before\n");
-
-  runGit(repository, ["init", "--quiet"]);
-  runGit(repository, ["config", "user.name", "Comprehension Gate Test"]);
-  runGit(repository, ["config", "user.email", "gate@example.invalid"]);
-  runGit(repository, [
-    "config",
-    "diff.sideeffect.textconv",
-    [process.execPath, helper, sentinel].map(quoteGitConfigArgument).join(" ")
-  ]);
-  runGit(repository, ["add", ".gitattributes", "sample.txt"]);
-  runGit(repository, ["commit", "--quiet", "-m", "fixture"]);
-  fs.writeFileSync(path.join(repository, "sample.txt"), "after\n");
-
-  const unsafe = "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --textconv";
-  assert.equal(isReadOnlyShellCommand(unsafe), false);
-  runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--textconv"]);
-  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute textconv");
-  fs.unlinkSync(sentinel);
-
-  runGit(repository, [
-    "config",
-    "core.fsmonitor",
-    [process.execPath, fsmonitorHelper, fsmonitorSentinel].map(quoteGitConfigArgument).join(" ")
-  ]);
-  const fsmonitorUnsafe = "git --no-pager diff --no-ext-diff --no-textconv";
-  assert.equal(isReadOnlyShellCommand(fsmonitorUnsafe), false);
-  runGit(repository, ["--no-pager", "diff", "--no-ext-diff", "--no-textconv"]);
-  assert.equal(fs.existsSync(fsmonitorSentinel), true, "fixture did not execute fsmonitor");
-  fs.unlinkSync(fsmonitorSentinel);
-
-  const guarded = "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv";
-  assert.equal(isReadOnlyShellCommand(guarded), true);
-  runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"]);
-  assert.equal(fs.existsSync(sentinel), false, "guarded diff executed textconv");
-  assert.equal(fs.existsSync(fsmonitorSentinel), false, "guarded diff executed fsmonitor");
-
-  if (process.platform !== "win32") {
-    const pagerHelper = path.join(repository, "grep-pager.mjs");
-    const pagerSentinel = path.join(repository, "grep-pager-ran");
-    fs.writeFileSync(
-      pagerHelper,
-      [
-        "#!/usr/bin/env node",
-        'import fs from "node:fs";',
-        `fs.writeFileSync(${JSON.stringify(pagerSentinel)}, "ran");`
-      ].join("\n")
-    );
-    fs.chmodSync(pagerHelper, 0o700);
-    const pagerOption = `-nO${pagerHelper}`;
-    const pagerCommand = `git --no-pager -c core.fsmonitor=false grep ${pagerOption} after -- sample.txt`;
-    assert.equal(isReadOnlyShellCommand(pagerCommand), false);
-    runGit(repository, ["--no-pager", "-c", "core.fsmonitor=false", "grep", pagerOption, "after", "--", "sample.txt"]);
-    assert.equal(fs.existsSync(pagerSentinel), true, "fixture did not execute grep pager");
-  }
-});
-
-test("pending PreToolUse permits guarded Git and denies helper-capable forms", () => {
-  const fixture = createFixture();
-  const base = { session_id: "git-pretool", hook_event_name: "PreToolUse", tool_name: "Bash" };
-  const guarded = handleHook(
+  handleHook(
     {
       ...base,
-      tool_input: {
-        command: "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv -- src/app.js"
-      }
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_use_id: "low-control",
+      tool_input: controlInput("bypass-low")
     },
     "compatible",
     fixture
   );
-  assert.equal(guarded.stdout, "");
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "low-control",
+      tool_input: controlInput("bypass-low"),
+      tool_response: { stdout: "<!-- comprehension-gate:bypass-low -->" }
+    },
+    "compatible",
+    fixture
+  );
 
-  for (const command of [
-    "git --no-pager diff --no-ext-diff --no-textconv",
-    "git --no-pager -c core.fsmonitor=false grep -nOsh needle"
-  ]) {
-    const denied = handleHook(
-      { ...base, tool_input: { command } },
+  const shell = handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "pwd" } },
+    "compatible",
+    fixture
+  );
+  assert.equal(shell.stdout, "");
+});
+
+test("pending denies every ordinary shell tool alias", () => {
+  const shellTools = [
+    "Bash",
+    "PowerShell",
+    "Shell",
+    "control_bash_process",
+    "execute_bash",
+    "execute_cmd",
+    "execute_command"
+  ];
+
+  for (const toolName of shellTools) {
+    const result = handleHook(
+      {
+        session_id: `pending-shell-${toolName}`,
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: { command: "cat README.md" }
+      },
       "compatible",
-      fixture
+      createFixture()
     );
-    assert.equal(
-      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
-      "deny",
-      command
+    assertDenied(result, "compatible", toolName);
+  }
+
+  for (const item of [
+    { mode: "cursor", base: { conversation_id: "pending-cursor-shell" }, tool: "Shell" },
+    { mode: "kiro", base: { session_id: "pending-kiro-shell" }, tool: "execute_bash" }
+  ]) {
+    const result = handleHook(
+      {
+        ...item.base,
+        hook_event_name: "preToolUse",
+        tool_name: item.tool,
+        tool_input: { command: "Get-Content README.md" }
+      },
+      item.mode,
+      createFixture()
     );
+    assertDenied(result, item.mode, `${item.mode}: pending shell`);
   }
 });
 
-test("known output and metadata mutation forms are denied through PreToolUse", () => {
-  const fixture = createFixture();
-  const base = { session_id: "shell-bypass", hook_event_name: "SessionStart" };
-  handleHook(base, "compatible", fixture);
-  const commands = [
-    "uniq /dev/null src/app.js",
-    "tree -o src/app.js .",
-    "git branch --set-upstream-to=origin/main",
-    "go list -mod=mod ./...",
-    "sort /O src/app.js input.txt",
-    "git diff --ext-diff",
-    "git --no-pager -c core.fsmonitor=false diff --no-ext-diff --no-textconv --textconv",
-    "git --no-pager -c core.fsmonitor=false log --ext-diff --no-ext-diff --no-textconv --no-show-signature -p",
-    "git --no-pager -c core.fsmonitor=false show --no-ext-diff --no-textconv --no-show-signature --ext-diff HEAD",
-    "git --no-pager -c core.fsmonitor=false cat-file --filters HEAD:README.md",
-    "git --no-pager -c core.fsmonitor=false cat-file --textconv HEAD:README.md",
-    "git --no-pager -c core.fsmonitor=false grep --textconv needle",
-    "git --no-pager -c core.fsmonitor=false grep --open-files-in-pager=sh needle",
-    "git --no-pager -c core.fsmonitor=false grep -nOsh needle",
-    "git status --short",
-    "git --no-pager -c core.fsmonitor=false remote show origin"
-  ];
-
-  for (const command of commands) {
-    const result = handleHook(
-      {
-        session_id: base.session_id,
-        hook_event_name: "PreToolUse",
-        tool_name: "Bash",
-        tool_input: { command }
-      },
-      "compatible",
-      fixture
-    );
-    assert.equal(
-      JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
-      "deny",
-      command
-    );
+test("a PATH-shadowed read command is reachable outside the gate but denied while pending", t => {
+  if (process.platform === "win32") {
+    t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
+    return;
   }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-path-shadow-"));
+  const binaryDirectory = path.join(directory, "bin");
+  const sentinel = path.join(directory, "shadow-cat-ran");
+  fs.mkdirSync(binaryDirectory);
+  fs.writeFileSync(
+    path.join(binaryDirectory, "cat"),
+    [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`
+    ].join("\n")
+  );
+  fs.chmodSync(path.join(binaryDirectory, "cat"), 0o700);
+
+  const env = { ...process.env, PATH: `${binaryDirectory}${path.delimiter}${process.env.PATH ?? ""}` };
+  const direct = spawnSync("cat", ["README.md"], { cwd: directory, env, encoding: "utf8" });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(fs.existsSync(sentinel), true, "fixture did not resolve the shadowed cat");
+  fs.unlinkSync(sentinel);
+
+  const denied = handleHook(
+    {
+      session_id: "path-shadow-shell",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "cat README.md" }
+    },
+    "compatible",
+    createFixture(env)
+  );
+  assertDenied(denied, "compatible", "PATH-shadowed cat");
+  assert.equal(fs.existsSync(sentinel), false, "denied hook executed the shadowed cat");
 });
 
 function createFixture(extraEnv = {}) {
@@ -1192,17 +851,8 @@ function createFixture(extraEnv = {}) {
   };
 }
 
-function runGit(cwd, args) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-  assert.equal(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
-  return result;
-}
-
-function quoteGitConfigArgument(value) {
-  if (process.platform === "win32") {
-    return `"${value.replaceAll('"', '\\"')}"`;
-  }
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+function controlInput(action, field = "file_path") {
+  return { [field]: controlTarget(action) };
 }
 
 function assertDenied(result, mode, message) {
