@@ -64,7 +64,13 @@ export function readGateState(provider, input, options = {}) {
   }
 }
 
-export function resetGate(provider, input, options = {}) {
+/*
+ * overrides.workspace is the canonical workspace recorded by a trusted
+ * lifecycle event (SessionStart / prompt submit). Resets triggered from
+ * PreToolUse must pass the previously recorded value (or null) so a hook
+ * cwd can never become the pin on its own.
+ */
+export function resetGate(provider, input, options = {}, overrides = {}) {
   const previous = readGateState(provider, input, options);
   const requestSequence = previous.ok ? previous.state.requestSequence + 1 : 1;
   const state = {
@@ -73,7 +79,7 @@ export function resetGate(provider, input, options = {}) {
     requestSequence,
     turnId: getTurnId(input),
     promptRecord: getPromptRecord(input, options),
-    workspace: getWorkspace(input),
+    workspace: overrides.workspace ?? null,
     updatedAt: new Date().toISOString()
   };
 
@@ -95,8 +101,9 @@ export function ensureGateState(provider, input, options = {}) {
   if (current.ok) {
     if (isNewerTurn(current.state, input)) {
       // The host reports a turn the state has never seen: the prompt hook
-      // that should have reset the gate was skipped, so reset now.
-      return resetGate(provider, input, options);
+      // that should have reset the gate was skipped, so reset now, keeping
+      // the workspace recorded by the last trusted lifecycle event.
+      return resetGate(provider, input, options, { workspace: current.state.workspace });
     }
     const state = reconcilePromptRecord(provider, input, current.state, options);
     if (canAdoptTurn(state, input)) {
@@ -111,7 +118,7 @@ export function ensureGateState(provider, input, options = {}) {
     return state;
   }
   if (current.reason === "missing") {
-    return resetGate(provider, input, options);
+    return resetGate(provider, input, options, { workspace: null });
   }
   throw new GateStateError(`Gate state is ${current.reason}.`);
 }
@@ -301,11 +308,6 @@ function getTurnId(input) {
     : null;
 }
 
-// Host-supplied cwd at the last reset; Codex inspection must run from here.
-function getWorkspace(input) {
-  return typeof input?.cwd === "string" && input.cwd !== "" ? input.cwd : null;
-}
-
 function getToolUseId(input) {
   const toolUseId = input?.tool_use_id;
   return typeof toolUseId === "string" && toolUseId !== ""
@@ -374,8 +376,9 @@ function reconcilePromptRecord(provider, input, state, options) {
   if (record === state.promptRecord) {
     return state;
   }
+  const keepWorkspace = { workspace: state.workspace };
   if (record === null) {
-    return SATISFIED.has(state.status) ? resetGate(provider, input, options) : state;
+    return SATISFIED.has(state.status) ? resetGate(provider, input, options, keepWorkspace) : state;
   }
   if (state.promptRecord === null && !SATISFIED.has(state.status)) {
     const adopted = { ...state, promptRecord: record, updatedAt: new Date().toISOString() };
@@ -384,7 +387,7 @@ function reconcilePromptRecord(provider, input, state, options) {
   }
   // Either a newer record, or a pass granted while nothing was judgeable:
   // in both cases the pass cannot be tied to the current prompt.
-  return resetGate(provider, input, options);
+  return resetGate(provider, input, options, keepWorkspace);
 }
 
 function getPromptRecord(input, options) {
