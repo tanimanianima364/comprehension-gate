@@ -39,12 +39,18 @@ test("the harness allowlist is provider-specific: Claude Code names are not trus
 });
 
 test("the read-only allowlist is provider-specific: generic read names are not trusted on Codex", () => {
-  for (const toolName of ["read_file", "read", "search_files", "semantic_search", "Read", "Grep"]) {
+  // Codex has no name-based read allowlist at all: even built-in names such as
+  // view_image can be taken over by an extension when the built-in is disabled.
+  for (const toolName of ["read_file", "read", "search_files", "semantic_search", "Read", "Grep", "view_image"]) {
     const result = pending(toolName, createFixture({ PLUGIN_ROOT: "/plugin" }));
     const output = result.stdout ? JSON.parse(result.stdout) : null;
     assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied on Codex while pending`);
   }
-  assert.equal(pending("view_image", createFixture({ PLUGIN_ROOT: "/plugin" })).stdout, "", "Codex view_image is read-only");
+});
+
+test("Cursor Glob is not a supported Cursor hook tool and is denied while pending", () => {
+  const result = pending("Glob", createFixture(), "cursor");
+  assert.equal(JSON.parse(result.stdout).permission, "deny");
 });
 
 test("the network opt-in only covers the provider's own built-in network tools", () => {

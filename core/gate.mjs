@@ -608,14 +608,17 @@ const WRITE_TOOLS = new Set([
 /*
  * Native read-only tools, keyed by provider: a name proves nothing across
  * hosts, and a Codex extension can present any plain tool name. Only verified
- * built-in names are listed. Codex has no native local reader on its hook
- * path and inspects through the pinned bridge commands instead.
+ * built-in names are listed. Codex has no name-based entry at all: it has
+ * no native local reader on its hook path and inspects through the pinned
+ * bridge commands instead.
  */
 const READ_ONLY_TOOLS_BY_PROVIDER = {
   claude: new Set(["glob", "grep", "read"]),
-  cursor: new Set(["glob", "grep", "read"]),
+  cursor: new Set(["grep", "read"]),
   kiro: new Set(["fs_read", "read"]),
-  codex: new Set(["view_image"])
+  // Intentionally empty: a Codex built-in such as view_image can be disabled
+  // by feature flag and its name taken over by an extension.
+  codex: new Set()
 };
 
 /*
