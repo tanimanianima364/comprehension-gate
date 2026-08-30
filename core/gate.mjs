@@ -154,7 +154,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
     }
 
     ensureGateState(provider, input, stateOptions);
-    const toolKind = classifyTool(input?.tool_name);
+    const toolKind = classifyTool(input?.tool_name, provider);
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
@@ -253,7 +253,7 @@ function normalizeEvent(event) {
   return String(event ?? "").toLowerCase();
 }
 
-function classifyTool(toolName) {
+function classifyTool(toolName, provider = null) {
   // Exact, case-insensitive match only. Stripping characters would let names
   // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
   const normalized = String(toolName ?? "").toLowerCase();
@@ -266,7 +266,7 @@ function classifyTool(toolName) {
   if (SHELL_TOOLS.has(normalized)) {
     return "shell";
   }
-  if (HARNESS_TOOLS.has(normalized)) {
+  if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "harness";
   }
   if (NETWORK_TOOLS.has(normalized)) {
@@ -628,21 +628,26 @@ const READ_ONLY_TOOLS = new Set([
   "viewimage"
 ]);
 
-// Host-side tools that cannot mutate the project: asking the user, listing a
-// directory, planning, loading a skill, or dispatching a subagent whose own
-// tool calls still pass through this hook.
-const HARNESS_TOOLS = new Set([
-  "agent",
-  "askuserquestion",
-  "ls",
-  "skill",
-  "task",
-  "taskcreate",
-  "taskget",
-  "tasklist",
-  "taskupdate",
-  "todowrite"
-]);
+/*
+ * Host-side tools that cannot mutate the project, keyed by provider because a
+ * name proves nothing across hosts (an extension tool may reuse any name).
+ * Only verified canonical names are listed; other providers stay
+ * deny-by-default until their names are confirmed. Tools that delegate
+ * execution are deliberately absent: Skill runs `!command` preprocessing
+ * before the model sees it, and Agent/Task can create a git worktree before
+ * the subagent's first gated tool call.
+ */
+const HARNESS_TOOLS_BY_PROVIDER = {
+  claude: new Set([
+    "askuserquestion",
+    "ls",
+    "taskcreate",
+    "taskget",
+    "tasklist",
+    "taskupdate",
+    "todowrite"
+  ])
+};
 
 // Denied while pending by default: an HTTP request can have side effects.
 const NETWORK_TOOLS = new Set([

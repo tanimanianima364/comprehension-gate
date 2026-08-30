@@ -5,7 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { handleHook } from "../core/gate.mjs";
 
-const HARNESS_TOOLS = ["AskUserQuestion", "LS", "Task", "Agent", "Skill", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+const HARNESS_TOOLS = ["AskUserQuestion", "LS", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+const DELEGATING_TOOLS = ["Skill", "Agent", "Task"];
 const NETWORK_TOOLS = ["WebFetch", "WebSearch", "web_fetch", "web_search"];
 
 test("pending gates allow harness tools that cannot mutate the project", () => {
@@ -13,6 +14,27 @@ test("pending gates allow harness tools that cannot mutate the project", () => {
     const result = pending(toolName, createFixture());
     assert.equal(result.stdout, "", `${toolName} should be allowed while pending`);
     assert.equal(result.exitCode, 0, toolName);
+  }
+});
+
+test("pending gates deny tools that delegate execution (skill preprocessing, subagent worktrees)", () => {
+  for (const toolName of DELEGATING_TOOLS) {
+    const result = pending(toolName, createFixture());
+    const output = result.stdout ? JSON.parse(result.stdout) : null;
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied while pending`);
+  }
+});
+
+test("the harness allowlist is provider-specific: Claude Code names are not trusted on other providers", () => {
+  for (const toolName of HARNESS_TOOLS) {
+    const result = pending(toolName, createFixture({ PLUGIN_ROOT: "/plugin" }));
+    const output = result.stdout ? JSON.parse(result.stdout) : null;
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied on Codex`);
+  }
+  for (const mode of ["cursor", "kiro"]) {
+    const result = pending("AskUserQuestion", createFixture(), mode);
+    const denied = mode === "kiro" ? result.exitCode === 2 : JSON.parse(result.stdout).permission === "deny";
+    assert.ok(denied, `${mode}: AskUserQuestion must be denied`);
   }
 });
 
@@ -34,12 +56,12 @@ test("COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 opts network tools back in w
   assert.equal(JSON.parse(off.stdout).hookSpecificOutput.permissionDecision, "deny", "only \"1\" enables the opt-in");
 });
 
-function pending(toolName, fixture) {
+function pending(toolName, fixture, mode = "compatible") {
   const session = { session_id: `policy-${toolName}` };
-  handleHook({ ...session, hook_event_name: "SessionStart" }, "compatible", fixture);
+  handleHook({ ...session, hook_event_name: "SessionStart" }, mode, fixture);
   return handleHook(
     { ...session, hook_event_name: "PreToolUse", tool_name: toolName, tool_input: { url: "http://localhost:3000/reset", path: "." } },
-    "compatible",
+    mode,
     fixture
   );
 }
