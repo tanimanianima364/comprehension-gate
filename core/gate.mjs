@@ -5,6 +5,7 @@ import {
   armGateControl,
   clearGateControl,
   completeGateControl,
+  CONTROL_ACTIONS,
   ensureGateState,
   GateStateError,
   checkGate,
@@ -16,12 +17,12 @@ import {
   decodeInspectionArgument,
   encodeInspectionArgument,
   INSPECTION_ACTIONS,
+  inspectionValueCount,
   runInspection
 } from "./inspection.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
-const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 const CONTROL_DIRECTORY = path.join(path.dirname(SCRIPT_PATH), "control");
 const CONTROL_MARKERS = {
   pass: "<!-- comprehension-gate:pass -->",
@@ -55,7 +56,7 @@ export function inspectionCommands(action, values, workspace, options = {}) {
   if (!INSPECTION_ACTIONS.has(action)) {
     throw new Error(`Unknown inspection action: ${action}`);
   }
-  const expectedArity = action === "inspect-read" ? 1 : 2;
+  const expectedArity = inspectionValueCount(action);
   if (!Array.isArray(values) || values.length !== expectedArity) {
     throw new Error(`${action} expects ${expectedArity} values.`);
   }
@@ -352,7 +353,7 @@ function codexInspectionAction(input, commandOptions) {
   }
 
   for (const action of INSPECTION_ACTIONS) {
-    const valueCount = action === "inspect-read" ? 1 : 2;
+    const valueCount = inspectionValueCount(action);
     const tokenPattern = "([A-Za-z0-9_-]+)";
     const match = command.match(new RegExp(` ${action} ${tokenPattern}(?: ${tokenPattern}){${valueCount}}$`));
     if (!match) {

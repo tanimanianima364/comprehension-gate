@@ -6,7 +6,7 @@ import { latestHumanPrompt } from "./transcript.mjs";
 
 const STATE_VERSION = 3;
 const SATISFIED = new Set(["passed", "bypassed-low"]);
-const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
+export const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 
 export class GateStateError extends Error {}
 
@@ -113,27 +113,6 @@ export function ensureGateState(provider, input, options = {}) {
     return resetGate(provider, input, options);
   }
   throw new GateStateError(`Gate state is ${current.reason}.`);
-}
-
-export function satisfyGate(provider, input, action, options = {}) {
-  assertControlAction(action);
-  const current = readGateState(provider, input, options);
-  if (!current.ok) {
-    throw new GateStateError(`Gate state is ${current.reason}.`);
-  }
-  if (!matchesCurrentTurn(current.state, input)) {
-    throw new GateStateError("Gate state belongs to a different turn.");
-  }
-
-  const status = action === "pass" ? "passed" : "bypassed-low";
-  const state = {
-    ...current.state,
-    status,
-    level: action === "pass" ? current.state.level ?? null : "low",
-    updatedAt: new Date().toISOString()
-  };
-  writeGateState(provider, input, state, options);
-  return state;
 }
 
 /*
