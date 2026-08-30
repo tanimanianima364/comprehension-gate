@@ -1,0 +1,18 @@
+{
+  "name": "comprehension-gate",
+  "version": "0.1.0",
+  "description": "Require demonstrated understanding before meaningful code changes",
+  "author": {
+    "name": "Comprehension Gate contributors"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Comprehension Gate",
+    "shortDescription": "Gate meaningful edits on demonstrated understanding.",
+    "longDescription": "Comprehension Gate asks codebase-specific questions and blocks meaningful project mutation until the user demonstrates the required understanding.",
+    "developerName": "Comprehension Gate contributors",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Run a comprehension check for the current implementation before coding."
+  }
+}

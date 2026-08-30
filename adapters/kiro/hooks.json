@@ -1,0 +1,47 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "comprehension-gate-session-start",
+      "trigger": "SessionStart",
+      "action": {
+        "type": "command",
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-user-prompt",
+      "trigger": "UserPromptSubmit",
+      "action": {
+        "type": "command",
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-pre-tool-use",
+      "trigger": "PreToolUse",
+      "matcher": "write|shell|fs_write|str_replace|delete_file|execute_bash|execute_cmd|control_bash_process",
+      "action": {
+        "type": "command",
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+      },
+      "timeout": 5,
+      "enabled": true
+    },
+    {
+      "name": "comprehension-gate-post-tool-use",
+      "trigger": "PostToolUse",
+      "matcher": "shell|execute_bash|execute_cmd",
+      "action": {
+        "type": "command",
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" kiro"
+      },
+      "timeout": 5,
+      "enabled": true
+    }
+  ]
+}

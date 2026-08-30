@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "timeout": 5
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "matcher": "Shell|Write|Delete",
+        "timeout": 5,
+        "failClosed": true
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "node \"__COMPREHENSION_GATE_ROOT__/core/gate.mjs\" cursor",
+        "matcher": "Shell",
+        "timeout": 5
+      }
+    ]
+  }
+}

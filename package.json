@@ -1,0 +1,15 @@
+{
+  "name": "comprehension-gate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A transcript-independent comprehension gate for coding agents",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "render:cursor": "node scripts/render-adapter.mjs cursor",
+    "render:kiro": "node scripts/render-adapter.mjs kiro"
+  }
+}
