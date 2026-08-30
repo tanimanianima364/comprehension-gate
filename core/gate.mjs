@@ -145,7 +145,7 @@ export function isReadOnlyShellCommand(command) {
     return !args.some(arg => FIND_MUTATING_FLAGS.some(flag => arg.startsWith(flag)));
   }
   if (executable === "sort") {
-    return !args.some(arg => arg === "-o" || arg === "--output" || arg.startsWith("--output=") || /^-o.+/.test(arg) || /^\/o$/i.test(arg));
+    return isReadOnlySort(args);
   }
   if (executable === "tree") {
     return !args.some(arg => arg === "-o" || arg === "--output" || arg.startsWith("--output=") || /^-o.+/.test(arg));
@@ -520,6 +520,87 @@ function isReadOnlyGit(args) {
   return false;
 }
 
+function isReadOnlySort(args) {
+  let optionsEnabled = true;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (/^\/o$/i.test(argument)) {
+      return false;
+    }
+    if (!optionsEnabled) {
+      continue;
+    }
+    if (argument === "--") {
+      optionsEnabled = false;
+      continue;
+    }
+    if (argument === "-" || !argument.startsWith("-")) {
+      continue;
+    }
+    if (argument.startsWith("--")) {
+      const equalsIndex = argument.indexOf("=");
+      const option = equalsIndex === -1 ? argument : argument.slice(0, equalsIndex);
+      const attachedValue = equalsIndex === -1 ? null : argument.slice(equalsIndex + 1);
+
+      if (SORT_LONG_FLAGS.has(option)) {
+        if (option === "--check" && attachedValue !== null) {
+          if (!SORT_CHECK_VALUES.has(attachedValue)) {
+            return false;
+          }
+        } else if (attachedValue !== null) {
+          return false;
+        }
+        continue;
+      }
+      if (!SORT_LONG_VALUE_OPTIONS.has(option)) {
+        return false;
+      }
+      if (attachedValue !== null) {
+        if (attachedValue === "") {
+          return false;
+        }
+        continue;
+      }
+      if (index + 1 >= args.length) {
+        return false;
+      }
+      index += 1;
+      continue;
+    }
+
+    const shortOptions = parseSortShortOptions(argument);
+    if (!shortOptions.valid) {
+      return false;
+    }
+    if (shortOptions.consumesNext) {
+      if (index + 1 >= args.length) {
+        return false;
+      }
+      index += 1;
+    }
+  }
+
+  return true;
+}
+
+function parseSortShortOptions(argument) {
+  for (let index = 1; index < argument.length; index += 1) {
+    const option = argument[index];
+    if (SORT_SHORT_FLAGS.has(option)) {
+      continue;
+    }
+    if (!SORT_SHORT_VALUE_OPTIONS.has(option)) {
+      return { valid: false, consumesNext: false };
+    }
+    return {
+      valid: true,
+      consumesNext: index === argument.length - 1
+    };
+  }
+  return { valid: true, consumesNext: false };
+}
+
 function matchesLongOptionPrefix(argument, option) {
   const candidate = argument.split("=", 1)[0];
   return candidate.length > 2 && candidate.startsWith("--") && option.startsWith(candidate);
@@ -618,6 +699,41 @@ const SIMPLE_READ_COMMANDS = new Set([
 ]);
 
 const FIND_MUTATING_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"];
+
+const SORT_SHORT_FLAGS = new Set("bdfgiMhnRrVcCmsuz");
+const SORT_SHORT_VALUE_OPTIONS = new Set(["k", "S", "t"]);
+const SORT_LONG_FLAGS = new Set([
+  "--check",
+  "--debug",
+  "--dictionary-order",
+  "--general-numeric-sort",
+  "--help",
+  "--human-numeric-sort",
+  "--ignore-case",
+  "--ignore-leading-blanks",
+  "--ignore-nonprinting",
+  "--merge",
+  "--month-sort",
+  "--numeric-sort",
+  "--random-sort",
+  "--reverse",
+  "--stable",
+  "--unique",
+  "--version",
+  "--version-sort",
+  "--zero-terminated"
+]);
+const SORT_CHECK_VALUES = new Set(["diagnose-first", "quiet", "silent"]);
+const SORT_LONG_VALUE_OPTIONS = new Set([
+  "--batch-size",
+  "--buffer-size",
+  "--field-separator",
+  "--files0-from",
+  "--key",
+  "--parallel",
+  "--random-source",
+  "--sort"
+]);
 
 const GIT_READ_SUBCOMMANDS = new Set([
   "describe",

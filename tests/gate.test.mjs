@@ -709,6 +709,12 @@ test("shell policy is conservative", () => {
     "git --no-pager -c core.fsmonitor=false remote -v",
     "git --no-pager -c core.fsmonitor=false remote show -n origin",
     "git --no-pager -c core.fsmonitor=false worktree list",
+    "sort input.txt",
+    "sort -nr -k2,2 input.txt",
+    "sort -S 64K --parallel=2 input.txt",
+    "sort --reverse --key 2,2 input.txt",
+    "sort -tT input.txt",
+    "sort -- --compress-program=filename",
     "find src -maxdepth 2 -type f",
     "Get-Content README.md"
   ];
@@ -763,7 +769,24 @@ test("shell policy is conservative", () => {
     "go env -w GOPATH=/tmp/go",
     "go list -mod=mod ./...",
     "sort --output sorted.txt input.txt",
+    "sort -o changed.txt input.txt",
+    "sort -ochanged.txt input.txt",
     "sort /O sorted.txt input.txt",
+    "sort -S 1K --compress-program=./scripts/mutate input.txt",
+    "sort --compress-program ./scripts/mutate input.txt",
+    "sort --compress-prog=./scripts/mutate input.txt -S 1K",
+    "sort --reverse --compress-program=./scripts/mutate input.txt",
+    "sort --compress-program=./scripts/mutate --reverse input.txt",
+    "sort --not-a-real-option input.txt",
+    "sort -X input.txt",
+    "sort -rochanged.txt input.txt",
+    "sort --out=changed.txt input.txt",
+    "sort -T . input.txt",
+    "sort -T. input.txt",
+    "sort -nT. input.txt",
+    "sort --temporary-directory . input.txt",
+    "sort --temporary-directory=. input.txt",
+    "sort --temp=. input.txt",
     "tree -o tree.txt .",
     "uniq input.txt output.txt",
     "node -e \"require('fs').writeFileSync('x','y')\"",
@@ -775,6 +798,92 @@ test("shell policy is conservative", () => {
   }
   for (const command of denied) {
     assert.equal(isReadOnlyShellCommand(command), false, command);
+  }
+});
+
+test("GNU sort helper execution is reachable but denied by the gate", t => {
+  const version = spawnSync("sort", ["--version"], { encoding: "utf8" });
+  if (version.status !== 0 || !version.stdout.startsWith("sort (GNU coreutils)")) {
+    t.skip("GNU sort is unavailable");
+    return;
+  }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-sort-"));
+  const helper = path.join(directory, "compress-helper.mjs");
+  const sentinel = path.join(directory, "compress-helper-ran");
+  const input = path.join(directory, "input.txt");
+  fs.writeFileSync(
+    helper,
+    [
+      "#!/usr/bin/env node",
+      'import fs from "node:fs";',
+      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`,
+      "process.stdin.pipe(process.stdout);"
+    ].join("\n")
+  );
+  fs.chmodSync(helper, 0o700);
+  fs.writeFileSync(
+    input,
+    Array.from({ length: 10000 }, (_, index) => `${String(10000 - index).padStart(8, "0")} payload\n`).join("")
+  );
+
+  const sortArgs = ["-S", "64K", `--compress-program=${helper}`, input];
+  const direct = spawnSync("sort", sortArgs, {
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  assert.equal(direct.status, 0, direct.stderr.toString());
+  assert.equal(fs.existsSync(sentinel), true, "fixture did not execute the compression helper");
+  fs.unlinkSync(sentinel);
+
+  const command = `sort -S 64K --compress-program=${helper} ${input}`;
+  assert.equal(isReadOnlyShellCommand(command), false);
+  const fixture = createFixture();
+  const denied = handleHook(
+    {
+      session_id: "sort-helper",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command }
+    },
+    "compatible",
+    fixture
+  );
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(fs.existsSync(sentinel), false, "denied hook executed the helper");
+});
+
+test("pending PreToolUse allows ordinary sort and denies unsafe sort options", () => {
+  const fixture = createFixture();
+  const base = {
+    session_id: "sort-pretool",
+    hook_event_name: "PreToolUse",
+    tool_name: "Bash"
+  };
+  const allowed = handleHook(
+    { ...base, tool_input: { command: "sort -nr -S 64K input.txt" } },
+    "compatible",
+    fixture
+  );
+  assert.equal(allowed.stdout, "");
+
+  for (const command of [
+    "sort --compress-program=./scripts/mutate input.txt",
+    "sort --compress-program ./scripts/mutate input.txt",
+    "sort --comp=./scripts/mutate input.txt",
+    "sort -rochanged.txt input.txt",
+    "sort -nT. input.txt",
+    "sort --not-a-real-option input.txt"
+  ]) {
+    const denied = handleHook(
+      { ...base, tool_input: { command } },
+      "compatible",
+      fixture
+    );
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      command
+    );
   }
 });
 
