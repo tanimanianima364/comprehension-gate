@@ -163,7 +163,10 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (provider === "codex" && codexInspectionAction(input, commandOptions)) {
       return allowResult();
     }
-    if (toolKind === "read") {
+    if (toolKind === "read" || toolKind === "harness") {
+      return allowResult();
+    }
+    if (toolKind === "network" && env.COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION === "1") {
       return allowResult();
     }
 
@@ -262,6 +265,12 @@ function classifyTool(toolName) {
   }
   if (SHELL_TOOLS.has(normalized)) {
     return "shell";
+  }
+  if (HARNESS_TOOLS.has(normalized)) {
+    return "harness";
+  }
+  if (NETWORK_TOOLS.has(normalized)) {
+    return "network";
   }
   return "other";
 }
@@ -467,9 +476,11 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control or Codex inspection command."
-    : toolKind === "other"
-      ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
-      : "";
+    : toolKind === "network"
+      ? " Network tools can trigger side effects, so they are denied while the gate is pending unless COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 is set."
+      : toolKind === "other"
+        ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
+        : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run the exact Codex pass command for the active shell: ${formatCodexControlCommands("pass", commandOptions)}`,
@@ -614,7 +625,27 @@ const READ_ONLY_TOOLS = new Set([
   "semantic_search",
   "semanticsearch",
   "view_image",
-  "viewimage",
+  "viewimage"
+]);
+
+// Host-side tools that cannot mutate the project: asking the user, listing a
+// directory, planning, loading a skill, or dispatching a subagent whose own
+// tool calls still pass through this hook.
+const HARNESS_TOOLS = new Set([
+  "agent",
+  "askuserquestion",
+  "ls",
+  "skill",
+  "task",
+  "taskcreate",
+  "taskget",
+  "tasklist",
+  "taskupdate",
+  "todowrite"
+]);
+
+// Denied while pending by default: an HTTP request can have side effects.
+const NETWORK_TOOLS = new Set([
   "web_fetch",
   "web_search",
   "webfetch",
