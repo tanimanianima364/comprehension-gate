@@ -8,10 +8,9 @@ import path from "node:path";
 import test from "node:test";
 import {
   controlCommand,
-  controlCommands,
   controlTarget,
   handleHook,
-  inspectionCommands,
+  inspectionCommand,
   renderInstructions
 } from "../core/gate.mjs";
 import {
@@ -248,141 +247,6 @@ test("Codex completes pass and LOW bypass through only the exact pinned Bash con
   }
 });
 
-test("Windows Codex exposes and accepts only exact controls for PowerShell, cmd, and Bash or Sh", () => {
-  const runtime = String.raw`C:\Program Files\nodejs\node.exe`;
-  const commandOptions = { platform: "win32", runtime };
-  const expectedShells = ["powershell", "cmd", "posix"];
-  const allControls = [
-    ...controlCommands("pass", commandOptions),
-    ...controlCommands("bypass-low", commandOptions)
-  ];
-  assert.deepEqual(
-    controlCommands("pass", commandOptions).map(({ shell }) => shell),
-    expectedShells
-  );
-
-  const contextFixture = {
-    ...createFixture({ PLUGIN_ROOT: String.raw`C:\plugin` }),
-    ...commandOptions
-  };
-  const base = { session_id: "codex-windows-context", turn_id: "turn-context" };
-  const start = handleHook(
-    { ...base, hook_event_name: "SessionStart" },
-    "compatible",
-    contextFixture
-  );
-  const instructions = JSON.parse(start.stdout).hookSpecificOutput.additionalContext;
-  assert.equal(renderInstructions("codex", commandOptions), instructions);
-  assert.match(instructions, /PowerShell:/);
-  assert.match(instructions, /cmd\.exe:/);
-  assert.match(instructions, /Bash \/ Sh:/);
-
-  const promptResult = handleHook(
-    { ...base, hook_event_name: "UserPromptSubmit" },
-    "compatible",
-    contextFixture
-  );
-  const prompt = JSON.parse(promptResult.stdout).hookSpecificOutput.additionalContext;
-  const denied = JSON.parse(handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: {} },
-    "compatible",
-    contextFixture
-  ).stdout).hookSpecificOutput.permissionDecisionReason;
-  for (const { command } of allControls) {
-    assert.match(instructions, new RegExp(escapeRegExp(command)));
-    assert.match(prompt, new RegExp(escapeRegExp(command)));
-    assert.match(denied, new RegExp(escapeRegExp(command)));
-  }
-
-  for (const action of ["pass", "bypass-low"]) {
-    const marker = action === "pass"
-      ? "<!-- comprehension-gate:pass -->\n"
-      : "<!-- comprehension-gate:bypass-low -->\n";
-    for (const { shell, command } of controlCommands(action, commandOptions)) {
-      const fixture = {
-        ...createFixture({ PLUGIN_ROOT: String.raw`C:\plugin` }),
-        ...commandOptions
-      };
-      const eventBase = {
-        session_id: `codex-windows-${action}-${shell}`,
-        turn_id: "turn-1"
-      };
-      handleHook(
-        { ...eventBase, hook_event_name: "SessionStart" },
-        "compatible",
-        fixture
-      );
-      for (const altered of [
-        ` ${command}`,
-        `${command} `,
-        `${command} --extra`,
-        `${command} & echo mutate`
-      ]) {
-        assertDenied(
-          handleHook(
-            {
-              ...eventBase,
-              hook_event_name: "PreToolUse",
-              tool_name: "Bash",
-              tool_input: { command: altered }
-            },
-            "compatible",
-            fixture
-          ),
-          "compatible",
-          `${action}/${shell}: altered command`
-        );
-      }
-
-      const toolUseId = `control-${action}-${shell}`;
-      assert.equal(
-        handleHook(
-          {
-            ...eventBase,
-            hook_event_name: "PreToolUse",
-            tool_name: "Bash",
-            tool_use_id: toolUseId,
-            tool_input: { command }
-          },
-          "compatible",
-          fixture
-        ).stdout,
-        ""
-      );
-      assertDenied(
-        handleHook(
-          { ...eventBase, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: {} },
-          "compatible",
-          fixture
-        ),
-        "compatible",
-        `${action}/${shell}: arm alone`
-      );
-      handleHook(
-        {
-          ...eventBase,
-          hook_event_name: "PostToolUse",
-          tool_name: "Bash",
-          tool_use_id: toolUseId,
-          tool_input: { command },
-          tool_response: { exit_code: 0, output: marker }
-        },
-        "compatible",
-        fixture
-      );
-      assert.equal(
-        handleHook(
-          { ...eventBase, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: {} },
-          "compatible",
-          fixture
-        ).stdout,
-        "",
-        `${action}/${shell}`
-      );
-    }
-  }
-});
-
 test("Codex pinned control command ignores PATH-shadowed node", t => {
   if (process.platform === "win32") {
     t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
@@ -448,7 +312,7 @@ test("Codex inspection commands read and search the hook workspace without satis
   ];
 
   for (const item of cases) {
-    const [{ command }] = inspectionCommands(item.action, item.values, workspace);
+    const command = inspectionCommand(item.action, item.values, workspace);
     const before = readGateState("codex", base, fixture);
     assert.equal(
       handleHook(
@@ -497,15 +361,15 @@ test("Codex inspection exception accepts only canonical commands for the active 
   const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
   const base = { session_id: "codex-inspect-grammar", turn_id: "turn-1", cwd: workspace };
   handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
-  const [{ command }] = inspectionCommands("inspect-read", ["README.md"], workspace);
-  const wrongRoot = inspectionCommands("inspect-read", ["README.md"], otherWorkspace)[0].command;
-  const wrongRuntime = inspectionCommands(
+  const command = inspectionCommand("inspect-read", ["README.md"], workspace);
+  const wrongRoot = inspectionCommand("inspect-read", ["README.md"], otherWorkspace);
+  const wrongRuntime = inspectionCommand(
     "inspect-read",
     ["README.md"],
     workspace,
     { runtime: "/untrusted/node" }
   )[0].command;
-  const wrongEntrypoint = inspectionCommands(
+  const wrongEntrypoint = inspectionCommand(
     "inspect-read",
     ["README.md"],
     workspace,

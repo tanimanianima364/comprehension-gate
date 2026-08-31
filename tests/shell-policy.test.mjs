@@ -255,6 +255,21 @@ test("argument-sensitive commands are judged by an allowlist of read-only flags"
   }
 });
 
+/*
+ * Every rule in the classifier reads the command as POSIX shell. Windows does
+ * not run one, so the scan would apply the wrong grammar and the command table
+ * the wrong names -- `Remove-Item` matches nothing and would classify as
+ * inspection. Refusing there keeps that failure closed. Only the shell closes;
+ * native reads and searches are untouched, so a Windows host can still inspect
+ * and still pass through a native read.
+ */
+test("the classifier refuses every shell command on a non-POSIX platform", () => {
+  for (const command of ["cat README.md", "Get-Content README.md", "Remove-Item README.md"]) {
+    assert.equal(classifyShellCommand(command, "win32"), "write", command);
+    assert.equal(classifyShellCommand(command, "linux"), "read", `${command} on POSIX`);
+  }
+});
+
 test("redirection is allowed only where it cannot name a write target", () => {
   for (const command of REDIRECT_READ_COMMANDS) {
     assert.equal(classifyShellCommand(command), "read", command);
