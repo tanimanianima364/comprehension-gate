@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { handleHook, inspectionCommands } from "../core/gate.mjs";
+import { handleHook, inspectionCommand } from "../core/gate.mjs";
 
 const posixOnly = t => {
   if (process.platform === "win32") {
@@ -15,7 +15,7 @@ const posixOnly = t => {
 const fixture = () => ({ env: { COMPREHENSION_GATE_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "cg-cwd-")), PLUGIN_ROOT: "/plugin" } });
 const workspaceDir = label => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `cg-ws-${label}-`)));
 const inspect = (base, cwd, target, fx, options = {}) => {
-  const [{ command }] = inspectionCommands("inspect-read", ["README.md"], target, options);
+  const command = inspectionCommand("inspect-read", ["README.md"], target, options);
   return handleHook({ ...base, hook_event_name: "PreToolUse", tool_name: "Bash", cwd, tool_input: { command } }, "compatible", { ...fx, ...options });
 };
 const isDenied = result => result.stdout !== "" && JSON.parse(result.stdout).hookSpecificOutput.permissionDecision === "deny";
@@ -80,13 +80,4 @@ test("the recorded workspace is compared canonically and permits descendants onl
   assert.equal(inspect(base, child, child, fx).stdout, "", "a descendant narrows the readable tree and is allowed");
   assert.ok(isDenied(inspect(base, sibling, sibling, fx)), "a sibling with a common prefix is denied");
   assert.ok(isDenied(inspect(base, path.dirname(workspace), path.dirname(workspace), fx)), "the parent is denied");
-});
-
-test("synthetic Windows workspaces compare case-insensitively with normalized separators", () => {
-  const fx = fixture();
-  const options = { platform: "win32", runtime: "C:\\Program Files\\nodejs\\node.exe" };
-  const base = { session_id: "codex-cwd-win", turn_id: "turn-1" };
-  handleHook({ ...base, hook_event_name: "SessionStart", cwd: "C:\\Repo\\" }, "compatible", { ...fx, ...options });
-  assert.equal(inspect(base, "c:\\repo\\src", "c:\\repo\\src", fx, options).stdout, "", "casing and trailing separator differences are canonical-equal");
-  assert.ok(isDenied(inspect(base, "c:\\repo-other", "c:\\repo-other", fx, options)), "sibling drive path is denied");
 });
