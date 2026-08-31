@@ -40,7 +40,7 @@ test("compatible flow blocks shell and writes until the native pass control comp
   assert.equal(JSON.parse(blocked.stdout).hookSpecificOutput.permissionDecision, "deny");
 
   const shellBlocked = handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "rg --files" } },
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "sed -i s/a/b/ README.md" } },
     "compatible",
     fixture
   );
@@ -547,17 +547,45 @@ test("native control targets contain the exact standalone markers", () => {
     assert.doesNotMatch(controlTarget(action), /(^|[\\/])node(?:\.exe)?(?:$|\s)/i);
   }
 
+  // Reading a control target through the shell is ordinary inspection, so it
+  // proceeds, but only a native read of the target arms the control. Printing
+  // the marker must never satisfy the gate.
+  const fixture = createFixture();
+  const base = { session_id: "shell-control-inert" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
+
   const shellRead = handleHook(
     {
-      session_id: "shell-control-denied",
+      ...base,
       hook_event_name: "PreToolUse",
       tool_name: "Bash",
+      tool_use_id: "shell-control",
       tool_input: { command: `cat ${controlTarget("pass")}` }
     },
     "compatible",
-    createFixture()
+    fixture
   );
-  assertDenied(shellRead, "compatible", "control target through shell");
+  assert.equal(shellRead.stdout, "", "control target through shell is inspection");
+
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Bash",
+      tool_use_id: "shell-control",
+      tool_input: { command: `cat ${controlTarget("pass")}` },
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->" }
+    },
+    "compatible",
+    fixture
+  );
+
+  const stillPending = handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "src/app.js" } },
+    "compatible",
+    fixture
+  );
+  assertDenied(stillPending, "compatible", "shell-printed marker must not satisfy the gate");
 });
 
 test("LOW bypass completes through the native read control", () => {
@@ -597,7 +625,10 @@ test("LOW bypass completes through the native read control", () => {
   assert.equal(shell.stdout, "");
 });
 
-test("pending denies every ordinary shell tool alias", () => {
+test("pending denies mutating commands through every ordinary shell tool alias", () => {
+  // Inspection commands proceed on every shell alias and provider; the
+  // classifier reads the command instead of trusting the tool name. See
+  // tests/shell-policy.test.mjs for the classification cases themselves.
   const shellTools = [
     "Bash",
     "PowerShell",
@@ -609,9 +640,21 @@ test("pending denies every ordinary shell tool alias", () => {
   ];
 
   for (const toolName of shellTools) {
-    const result = handleHook(
+    const denied = handleHook(
       {
         session_id: `pending-shell-${toolName}`,
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: { command: "rm -rf src" }
+      },
+      "compatible",
+      createFixture()
+    );
+    assertDenied(denied, "compatible", toolName);
+
+    const allowed = handleHook(
+      {
+        session_id: `pending-shell-read-${toolName}`,
         hook_event_name: "PreToolUse",
         tool_name: toolName,
         tool_input: { command: "cat README.md" }
@@ -619,7 +662,7 @@ test("pending denies every ordinary shell tool alias", () => {
       "compatible",
       createFixture()
     );
-    assertDenied(result, "compatible", toolName);
+    assert.equal(allowed.stdout, "", `${toolName} inspection`);
   }
 
   for (const item of [
@@ -631,7 +674,7 @@ test("pending denies every ordinary shell tool alias", () => {
         ...item.base,
         hook_event_name: "preToolUse",
         tool_name: item.tool,
-        tool_input: { command: "Get-Content README.md" }
+        tool_input: { command: "rm README.md" }
       },
       item.mode,
       createFixture()
@@ -640,7 +683,11 @@ test("pending denies every ordinary shell tool alias", () => {
   }
 });
 
-test("a PATH-shadowed read command is reachable outside the gate but denied while pending", t => {
+// The shell policy is a denylist, so a mutating command wearing an
+// inspection command's name gets through. This is the accepted residual
+// bypass documented in core/shell.mjs: the gate guards a cooperative agent,
+// and closing this hole would cost the exploration the gate is meant to keep.
+test("a PATH-shadowed read command is an accepted residual bypass while pending", t => {
   if (process.platform === "win32") {
     t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
     return;
@@ -666,7 +713,7 @@ test("a PATH-shadowed read command is reachable outside the gate but denied whil
   assert.equal(fs.existsSync(sentinel), true, "fixture did not resolve the shadowed cat");
   fs.unlinkSync(sentinel);
 
-  const denied = handleHook(
+  const allowed = handleHook(
     {
       session_id: "path-shadow-shell",
       hook_event_name: "PreToolUse",
@@ -676,6 +723,6 @@ test("a PATH-shadowed read command is reachable outside the gate but denied whil
     "compatible",
     createFixture(env)
   );
-  assertDenied(denied, "compatible", "PATH-shadowed cat");
-  assert.equal(fs.existsSync(sentinel), false, "denied hook executed the shadowed cat");
+  assert.equal(allowed.stdout, "", "the denylist classifies a shadowed cat as inspection");
+  assert.equal(fs.existsSync(sentinel), false, "the hook decides only; it must never run the command itself");
 });
