@@ -165,6 +165,51 @@ const EXPANSION_WRITE_COMMANDS = [
   "cat $1"
 ];
 
+/*
+ * Commands whose classification reads their arguments use an allowlist of
+ * read-only flags, so a flag the scanner cannot see -- an expansion, or simply
+ * one nobody has vetted -- falls outside the allowed set instead of slipping
+ * past a denylist. This is the same failure direction that already protects
+ * `git`, whose subcommands are an allowlist.
+ */
+const ARGUMENT_SENSITIVE_READ_COMMANDS = [
+  "sed -n 1,40p core/gate.mjs",
+  "sed -n -e 1p core/gate.mjs",
+  "sed --quiet 1p core/gate.mjs",
+  "find core -name *.mjs",
+  "find . -type f -maxdepth 2",
+  "find core -iname x -print",
+  "find . -mtime -1",
+  "git log --oneline"
+];
+
+const ARGUMENT_SENSITIVE_WRITE_COMMANDS = [
+  // The reported bypass: an expanded argument is invisible, so a denylist over
+  // argument content never matched it.
+  "sed $FLAG s/a/b/ README.md",
+  "sed ${FLAG} s/a/b/ README.md",
+  "sed $(echo -i) s/a/b/ README.md",
+  "find core $ACTION",
+  "find core $(echo -delete)",
+  "git $SUB",
+  // Unvetted flags are outside the allowlist rather than absent from a denylist.
+  "sed -i s/a/b/ README.md",
+  "sed --in-place s/a/b/ README.md",
+  "sed --unknown 1p README.md",
+  "find core -delete",
+  "find core -name *.mjs -exec rm {} +",
+  "find core -fprintf out.txt %p"
+];
+
+test("argument-sensitive commands are judged by an allowlist of read-only flags", () => {
+  for (const command of ARGUMENT_SENSITIVE_READ_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "read", command);
+  }
+  for (const command of ARGUMENT_SENSITIVE_WRITE_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "write", command);
+  }
+});
+
 test("redirection is allowed only where it cannot name a write target", () => {
   for (const command of REDIRECT_READ_COMMANDS) {
     assert.equal(classifyShellCommand(command), "read", command);

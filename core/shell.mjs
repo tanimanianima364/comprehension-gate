@@ -65,11 +65,34 @@ const GIT_READ_SUBCOMMANDS = new Set([
   "ls-tree", "rev-list", "rev-parse", "shortlog", "show", "status"
 ]);
 
-const FIND_WRITE_ACTIONS = new Set([
-  "-delete", "-execdir", "-exec", "-fls", "-fprint", "-fprintf", "-ok", "-okdir"
+/*
+ * `sed` and `find` are classified by what their arguments say, so their flags
+ * are an allowlist rather than a denylist. A flag the scanner cannot see --
+ * an expansion, or one nobody has vetted -- then falls outside the allowed set
+ * instead of slipping past, which is the same failure direction that protects
+ * the git subcommands above.
+ *
+ * The residual is a sed script body: `w` and `s///w` write a file whatever the
+ * flags say. That is the accepted denylist trade described at the top of this
+ * file, not something these lists claim to cover.
+ */
+const SED_READ_FLAGS = new Set([
+  "-E", "-e", "-f", "-n", "-r", "-s", "-u", "-z",
+  "--debug", "--expression", "--file", "--null-data", "--posix", "--quiet",
+  "--regexp-extended", "--sandbox", "--separate", "--silent", "--unbuffered"
 ]);
 
-const SED_IN_PLACE = /^(--in-place|-[a-z]*i)/;
+const FIND_READ_PRIMARIES = new Set([
+  "-H", "-L", "-P", "-a", "-and", "-anewer", "-atime", "-depth", "-empty",
+  "-follow", "-group", "-iname", "-inum", "-ipath", "-iregex", "-links",
+  "-maxdepth", "-mindepth", "-mmin", "-mtime", "-name", "-newer", "-nogroup",
+  "-not", "-nouser", "-o", "-or", "-path", "-perm", "-print", "-print0",
+  "-printf", "-prune", "-quit", "-regex", "-size", "-true", "-false", "-type",
+  "-user", "-xdev"
+]);
+
+// A leading-dash numeric operand (`-mtime -1`) is a value, not a flag.
+const NUMERIC_OPERAND = /^-\d+$/;
 const REDIRECT_TARGET = "/dev/null";
 const VARIABLE_NAME = /[A-Za-z_]/;
 
@@ -350,17 +373,31 @@ function isReadCommand(tokens) {
   if (WRITE_COMMANDS.has(name)) {
     return false;
   }
-  const rest = tokens.slice(1).map(token => token.value);
+  const rest = tokens.slice(1);
   if (name === "git") {
-    return GIT_READ_SUBCOMMANDS.has(rest[0]);
+    return !rest[0]?.expanded && GIT_READ_SUBCOMMANDS.has(rest[0]?.value);
   }
-  if (name === "sed" && rest.some(token => SED_IN_PLACE.test(token))) {
-    return false;
+  if (name === "sed") {
+    return hasOnlyAllowedFlags(rest, SED_READ_FLAGS);
   }
-  if (name === "find" && rest.some(token => FIND_WRITE_ACTIONS.has(token))) {
-    return false;
+  if (name === "find") {
+    return hasOnlyAllowedFlags(rest, FIND_READ_PRIMARIES);
   }
   return true;
+}
+
+function hasOnlyAllowedFlags(rest, allowed) {
+  return rest.every(token => {
+    // An expanded argument could be any flag at all, so it can never be
+    // confirmed to be one of the allowed ones.
+    if (token.expanded) {
+      return false;
+    }
+    if (!token.value.startsWith("-") || NUMERIC_OPERAND.test(token.value)) {
+      return true;
+    }
+    return allowed.has(token.value);
+  });
 }
 
 /*
