@@ -9,18 +9,10 @@ import { classifyShellCommand } from "../core/shell.mjs";
 // Constructs that cannot be broken into independently classifiable commands,
 // so they are refused outright rather than reasoned about.
 const UNDECOMPOSABLE_COMMANDS = [
-  "cat $(printf src)",
-  "cat `printf src`",
-  "cat README.md > out.txt",
-  "cat README.md >> out.txt",
   "cat < README.md",
-  "cat README.md 2>&1",
+  "cat << EOF",
   "echo hi & rm src/app.js",
   "(cd src)",
-  // Expansion still happens inside double quotes, so those two characters stay
-  // rejected there. Single quotes suppress it and are left alone.
-  'cat "$(printf src)"',
-  'cat "`printf src`"',
   // An unterminated quote means the scan never returned to the unquoted state.
   'cat "README.md',
   "cat 'README.md",
@@ -111,6 +103,85 @@ const SEPARATED_WRITE_COMMANDS = [
   "cat README.md\nrm src/app.js",
   "grep -rn foo core | xargs rm"
 ];
+
+// Redirection is allowed only in forms that cannot name a file to write:
+// /dev/null, and file-descriptor duplication.
+const REDIRECT_READ_COMMANDS = [
+  "find core -name *.mjs 2>/dev/null",
+  "find core -name *.mjs 2> /dev/null",
+  "grep -rn foo core >/dev/null",
+  "grep -rn foo core >>/dev/null",
+  "grep -rn foo core &>/dev/null",
+  "grep -rn foo core 2>&1",
+  "grep -rn foo core 2>&-",
+  "ls -l 2>/dev/null | head -5"
+];
+
+const REDIRECT_WRITE_COMMANDS = [
+  "cat README.md > out.txt",
+  "cat README.md >> out.txt",
+  "cat README.md 2>out.txt",
+  "cat README.md > /dev/nullx",
+  "cat README.md >",
+  // An ambiguous token boundary must resolve to a refusal, never to an allow.
+  "cat file2>out.txt"
+];
+
+/*
+ * Parameter expansion is allowed because POSIX does not re-parse the result of
+ * an expansion for control operators, so `$FOO` cannot introduce a second
+ * command. Command substitution does run a command, so its body is classified
+ * recursively instead.
+ */
+const EXPANSION_READ_COMMANDS = [
+  "echo $HOME",
+  "cat $HOME/.bashrc",
+  "cat ${HOME}/.bashrc",
+  "grep -rn foo $(pwd)",
+  "ls `pwd`",
+  'grep -rn foo "$(pwd)"',
+  "cat $HOME/x | grep -c foo"
+];
+
+const EXPANSION_WRITE_COMMANDS = [
+  // An expansion in the command-name position hides the name from the
+  // denylist, so the segment cannot be judged.
+  "$FOO README.md",
+  "$(echo cat) README.md",
+  "`echo cat` README.md",
+  "${FOO} README.md",
+  // The body of a substitution is classified like any other command.
+  "grep -rn foo $(rm -rf src)",
+  'grep -rn foo "$(git commit -m wip)"',
+  "ls `rm -rf src`",
+  // Nested substitution inside a parameter expansion is not decomposed.
+  "cat ${FOO:-$(rm -rf src)}",
+  // An unterminated substitution has no body to classify.
+  "cat $(pwd",
+  "ls `pwd",
+  "cat ${HOME",
+  // Unsupported expansion forms stay refused.
+  "cat $?",
+  "cat $1"
+];
+
+test("redirection is allowed only where it cannot name a write target", () => {
+  for (const command of REDIRECT_READ_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "read", command);
+  }
+  for (const command of REDIRECT_WRITE_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "write", command);
+  }
+});
+
+test("parameter expansion is allowed and command substitution is classified recursively", () => {
+  for (const command of EXPANSION_READ_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "read", command);
+  }
+  for (const command of EXPANSION_WRITE_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "write", command);
+  }
+});
 
 test("shell classification refuses constructs it cannot decompose", () => {
   for (const command of UNDECOMPOSABLE_COMMANDS) {
