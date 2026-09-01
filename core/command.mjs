@@ -2,7 +2,14 @@ import path from "node:path";
 
 const ENTRYPOINT_BOOTSTRAP = "import('node:url').then(m=>import(m.pathToFileURL(Buffer.from(process.argv[1],'base64url').toString('utf8')).href)).then(m=>m.main())";
 const SAFE_ARGUMENT = /^[A-Za-z0-9_-]+$/;
-const ADAPTERS = new Set(["cursor", "kiro"]);
+// Adapter template -> the entrypoint mode it renders for. Kiro 2.x embeds its
+// hooks in the agent config instead of a standalone file, but the payloads and
+// the blocking contract are the 3.x ones, so it runs the same mode.
+const ADAPTERS = new Map([
+  ["cursor", "cursor"],
+  ["kiro", "kiro"],
+  ["kiro-2x", "kiro"]
+]);
 
 export function buildEntrypointCommand(entrypoint, argument) {
   if (typeof entrypoint !== "string" || entrypoint.length === 0) {
@@ -46,10 +53,11 @@ export function buildPinnedEntrypointCommand(
 }
 
 export function adapterCommand(provider, root) {
-  if (!ADAPTERS.has(provider)) {
+  const mode = ADAPTERS.get(provider);
+  if (mode === undefined) {
     throw new Error(`Unsupported adapter: ${provider}`);
   }
-  return buildEntrypointCommand(path.join(root, "core", "gate.mjs"), provider);
+  return buildEntrypointCommand(path.join(root, "core", "gate.mjs"), mode);
 }
 
 // POSIX single-quoting keeps every byte of the Node runtime path literal, so

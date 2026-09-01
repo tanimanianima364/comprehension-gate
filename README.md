@@ -6,14 +6,19 @@ The agent still decides whether a change is LOW, MEDIUM, HIGH, or CRITICAL and e
 
 ## Supported adapters
 
-| Agent | Hook configuration | Blocking mechanism |
-| --- | --- | --- |
-| Claude Code | `hooks/hooks.json` | `PreToolUse.permissionDecision: deny` |
-| Codex | the same `hooks/hooks.json` | `PreToolUse.permissionDecision: deny` |
-| Cursor | Claude compatibility or `adapters/cursor/hooks.json` | `preToolUse.permission: deny` |
-| Kiro CLI 3.x | `adapters/kiro/hooks.json` | non-zero `PreToolUse` command exit |
+| Agent | Hook configuration | Blocking mechanism | Verified against a running host |
+| --- | --- | --- | --- |
+| Claude Code | `hooks/hooks.json` | `PreToolUse.permissionDecision: deny` | yes |
+| Codex | the same `hooks/hooks.json` | `PreToolUse.permissionDecision: deny` | no |
+| Cursor | Claude compatibility or `adapters/cursor/hooks.json` | `preToolUse.permission: deny` | no |
+| Kiro CLI 2.x | `adapters/kiro-2x/hooks.json`, merged into the agent config | non-zero `preToolUse` command exit | yes, 2.16.2 |
+| Kiro CLI 3.x | `adapters/kiro/hooks.json` | non-zero `PreToolUse` command exit | no |
 
-Kiro CLI 2.x uses a different embedded-hook format and is intentionally unsupported.
+The last column is the honest one. Only Claude Code and Kiro CLI 2.x have been exercised against a running host; the other adapters were written from each vendor's documentation and are covered by tests that model the documented contract, not by a live run. Kiro CLI 3.x in particular is still early access at the time of writing, reached with `kiro-cli --v3`, so 2.x is what most installations have.
+
+The two Kiro adapters differ only in packaging. 3.x reads standalone `.kiro/hooks/*.json` files; 2.x embeds the same triggers in the agent config under `hooks`. Payloads, tool names, and the exit-code-2 block are the same, so both render for the same entrypoint mode.
+
+Two details of 2.x are worth knowing because its documentation is wrong about them, and both were found by capturing real hook payloads from 2.16.2 rather than by reading. The `matcher` is documented as a regex but is not one: only `"*"` or an omitted matcher fires for every tool, while `".*"` -- the value the vendor's own example uses -- fires for none, which would leave the gate silently absent rather than merely narrow. And no payload carries a session id; the hook process receives `KIRO_SESSION_ID` in its environment instead, which is where the gate reads it from.
 
 ## How it works
 
@@ -84,6 +89,15 @@ Cursor can reuse the Claude hook configuration when third-party plugins/configs 
 node scripts/render-adapter.mjs cursor --output /project/.cursor/hooks.json
 ```
 
+For Kiro CLI 2.x, render the fragment and merge its `hooks` object into the agent config the session runs with, whether that is a global agent in `~/.kiro/agents/<name>.json` or a workspace one:
+
+```bash
+node scripts/render-adapter.mjs kiro-2x
+kiro-cli agent validate --path ~/.kiro/agents/<name>.json
+```
+
+Merge rather than overwrite: an agent config holds far more than hooks, and an existing `hooks` object may already carry entries of its own. Keep the `"matcher": "*"` on every trigger.
+
 For Kiro CLI 3.x:
 
 ```bash
@@ -115,7 +129,7 @@ The renderer encodes the absolute entrypoint as a base64url argument and uses a 
 npm test
 ```
 
-The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed provider control completion, concurrent control arming, symlinked plugin-root execution, unrecognized-event and `SessionStart` failure handling, write-list near-miss and namespaced-verb matching, Cursor turn-id adoption, transcript-based stale-pass invalidation, failed provider results, Codex turn isolation and exact pinned pass/bypass controls, Codex inspection production flow and grammar rejection, canonical workspace/workdir binding, traversal and symlink escapes, UTF-8 and size/result bounds, PASS-marker state isolation, allow-by-default tool handling with named write denial, unenumerated and MCP tools proceeding, an allowed non-read failing to arm a control, network reads proceeding, shell inspection classification covering quote-aware separator decomposition, redirection targets and descriptor duplication, parameter expansion and recursive command substitution, expansion in the command-name position, undecomposable constructs, quoted-flag and executable-extension evasion, write commands, assignment prefixes and command wrappers, the unsupported-platform refusal reaching the Codex exceptions and ending at pass, and every shell tool name and provider, the accepted PATH-shadow trade-off, a PATH-shadowed `node` regression, Kiro single-operation `operations[].path` reads and malformed forms, namespaced MCP write denial across providers, encoded adapter execution with shell metacharacters, both Kiro start event forms, and provider-specific output shapes.
+The tests cover state reset/pass/bypass, missing-first-event initialization, invalid/unreadable fail-closed behavior, armed provider control completion, concurrent control arming, symlinked plugin-root execution, unrecognized-event and `SessionStart` failure handling, write-list near-miss and namespaced-verb matching, Cursor turn-id adoption, transcript-based stale-pass invalidation, failed provider results, Codex turn isolation and exact pinned pass/bypass controls, Codex inspection production flow and grammar rejection, canonical workspace/workdir binding, traversal and symlink escapes, UTF-8 and size/result bounds, PASS-marker state isolation, allow-by-default tool handling with named write denial, unenumerated and MCP tools proceeding, an allowed non-read failing to arm a control, network reads proceeding, shell inspection classification covering quote-aware separator decomposition, redirection targets and descriptor duplication, parameter expansion and recursive command substitution, expansion in the command-name position, undecomposable constructs, quoted-flag and executable-extension evasion, write commands, assignment prefixes and command wrappers, the unsupported-platform refusal reaching the Codex exceptions and ending at pass, and every shell tool name and provider, the accepted PATH-shadow trade-off, a PATH-shadowed `node` regression, Kiro 2.x adapter matcher and environment session identity, Kiro single-operation `operations[].path` reads and malformed forms, namespaced MCP write denial across providers, encoded adapter execution with shell metacharacters, both Kiro start event forms, and provider-specific output shapes.
 
 ## Security boundary
 

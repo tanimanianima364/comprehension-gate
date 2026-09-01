@@ -28,7 +28,7 @@ export function resolveStateDirectory(env = process.env) {
 }
 
 export function stateFilePath(provider, input, options = {}) {
-  const sessionId = getSessionId(input);
+  const sessionId = getSessionId(input, options.env ?? process.env);
   const digest = createHash("sha256")
     .update(`${provider}\0${sessionId}`)
     .digest("hex");
@@ -263,8 +263,14 @@ function overwriteGateState(provider, input, state, options) {
   );
 }
 
-function getSessionId(input) {
-  const sessionId = input?.session_id ?? input?.conversation_id;
+/*
+ * Kiro CLI 2.x puts no session identity in the hook payload; it exposes
+ * KIRO_SESSION_ID in the hook process environment instead. Verified against
+ * 2.16.2, where every trigger's payload carries only hook_event_name, cwd, and
+ * the tool fields.
+ */
+function getSessionId(input, env = {}) {
+  const sessionId = input?.session_id ?? input?.conversation_id ?? env?.KIRO_SESSION_ID;
   if (typeof sessionId !== "string" || sessionId.trim() === "") {
     throw new GateStateError("Hook input is missing session_id/conversation_id.");
   }

@@ -8,8 +8,8 @@ const defaultRoot = path.resolve(scriptDirectory, "..");
 const args = process.argv.slice(2);
 const provider = args.shift();
 
-if (!new Set(["cursor", "kiro"]).has(provider)) {
-  fail("Usage: node scripts/render-adapter.mjs <cursor|kiro> [--root PATH] [--output PATH] [--force]");
+if (!new Set(["cursor", "kiro", "kiro-2x"]).has(provider)) {
+  fail("Usage: node scripts/render-adapter.mjs <cursor|kiro|kiro-2x> [--root PATH] [--output PATH] [--force]");
 }
 
 let pluginRoot = defaultRoot;
