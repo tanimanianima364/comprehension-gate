@@ -296,9 +296,9 @@ function normalizeEvent(event) {
 
 function classifyTool(toolName, provider = null) {
   const normalized = String(toolName ?? "").toLowerCase();
-  // The read list decides which native read may arm a control marker, so it
-  // matches exactly: "Read2" or "@fs/read" must not stand in for "Read".
-  if (READ_ONLY_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
+  // Matched exactly: "Read2" or "@fs/read" must not stand in for "Read" when
+  // the question is whether this call may arm a control marker.
+  if (CONTROL_READ_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "read";
   }
   /*
@@ -653,26 +653,23 @@ const WRITE_TOOLS = new Set([
 ]);
 
 /*
- * Read-only tools, keyed by provider: a name proves nothing across hosts, and
- * a Codex extension can present any plain tool name. Only verified built-in
- * names are listed.
+ * Tools that may arm a control marker, keyed by provider. This is no longer a
+ * permission list -- the default became allow, so a tool does not need to be
+ * here to run -- and it now has exactly one job: naming the native local file
+ * reads whose reading of a plugin-owned marker counts as pass or LOW bypass.
  *
- * The network reads belong here rather than behind a separate refusal. This
- * gate protects one project from mutation before understanding, and fetching
- * or searching cannot mutate it. A remote resource can be changed over HTTP,
- * but that is not this project and the hook allows these tools the moment the
- * gate passes, so it never protected one; refusing them only cost the agent
- * its research. An operator who wants them closed has the host permission
- * model for that. Codex has no name-based entry at all: it has
- * no native local reader on its hook path and inspects through the pinned
- * bridge commands instead.
+ * Nothing else belongs here even if it is harmless to run. A network fetch is
+ * allowed while pending, but it must not be able to arm a control: given a
+ * `path` naming the marker and a response body containing it, it would satisfy
+ * the gate without ever reading the file. A name proves nothing across hosts
+ * either, so only verified built-ins are listed; Codex has no entry at all,
+ * because a built-in such as view_image can be disabled by feature flag and
+ * its name taken over by an extension, and it uses the pinned bridge instead.
  */
-const READ_ONLY_TOOLS_BY_PROVIDER = {
-  claude: new Set(["glob", "grep", "read", "webfetch", "websearch"]),
+const CONTROL_READ_TOOLS_BY_PROVIDER = {
+  claude: new Set(["glob", "grep", "read"]),
   cursor: new Set(["grep", "read"]),
   kiro: new Set(["fs_read", "read"]),
-  // Intentionally empty: a Codex built-in such as view_image can be disabled
-  // by feature flag and its name taken over by an extension.
   codex: new Set()
 };
 
