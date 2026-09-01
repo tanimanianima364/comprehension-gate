@@ -109,7 +109,7 @@ This plugin is a learning workflow guardrail, not a sandbox or authorization bou
 
 ## Known limitations
 
-The plugin targets POSIX shells. On Windows the shell classifier refuses every command, because its rules read a command as POSIX shell and would otherwise let a PowerShell cmdlet such as `Remove-Item` through as inspection. Native reads and searches are unaffected, so Claude Code, Cursor, and Kiro still inspect and still pass through a native read there; Codex, whose controls and inspection bridge assume a POSIX shell, is unsupported on Windows.
+The plugin targets POSIX shells. On Windows the gate refuses every shell tool, because the classifier's rules read a command as POSIX shell and would otherwise let a PowerShell cmdlet such as `Remove-Item` through as inspection. The refusal sits in `handleHook` ahead of the Codex control and inspection exceptions rather than inside the classifier, since those match a command exactly and return before the classifier is consulted; it keys on the tool kind rather than the provider, so native reads stay available. Native reads and searches are unaffected, so Claude Code, Cursor, and Kiro still inspect and still pass through a native read there; Codex, whose controls and inspection bridge assume a POSIX shell, is unsupported on Windows.
 
 Current primary references:
 

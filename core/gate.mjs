@@ -154,6 +154,27 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     const state = ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name, provider);
+
+    /*
+     * Every shell rule this plugin has reads a command as POSIX shell, so on
+     * any other platform the scan applies the wrong grammar and the command
+     * table the wrong names: `Remove-Item` matches nothing and would look like
+     * inspection. Refuse every shell tool there instead.
+     *
+     * This sits ahead of the control and inspection exceptions on purpose.
+     * Those match a command exactly and return before the classifier is ever
+     * consulted, so a guard inside classifyShellCommand would not be reached
+     * by them. Keying on the tool kind rather than the provider leaves native
+     * reads working on every host, which is how Claude Code, Cursor, and Kiro
+     * still pass here.
+     */
+    if ((options.platform ?? process.platform) === "win32" && toolKind === "shell") {
+      return denyResult(
+        mode,
+        "Comprehension Gate classifies shell commands as POSIX shell and this platform is not one, so no shell command is available. Use the host's native file-reading and search tools."
+      );
+    }
+
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);

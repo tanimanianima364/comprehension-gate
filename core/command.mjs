@@ -52,8 +52,8 @@ export function adapterCommand(provider, root) {
   return buildEntrypointCommand(path.join(root, "core", "gate.mjs"), provider);
 }
 
-// Single-quoting keeps every byte of the runtime path literal, so plugin-path
-// bytes are never interpreted as shell syntax.
+// POSIX single-quoting keeps every byte of the Node runtime path literal, so
+// a runtime path is never interpreted as shell syntax.
 function quotePath(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
