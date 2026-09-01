@@ -281,7 +281,7 @@ test("no shell tool is allowed on an unsupported platform", () => {
         "deny",
         `${toolName}: ${command}`
       );
-      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /Linux only/);
+      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /until the gate passes/);
     }
   }
   assert.equal(pending("Bash", "cat README.md", {}, { platform: "linux" }).stdout, "", "Linux is unaffected");
@@ -313,6 +313,66 @@ test("the Codex control and inspection exceptions are closed on an unsupported p
       JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
       "deny",
       "refused off Linux"
+    );
+  }
+});
+
+/*
+ * The refusal belongs to the pending path only. After pass this hook goes
+ * silent and the host's permission model is the authority on every platform,
+ * so carrying it further would leave the shell permanently unusable rather
+ * than merely unjudged.
+ */
+test("an unsupported platform regains the shell once the gate passes", () => {
+  const fixture = createFixture();
+  const options = { ...fixture, platform: "darwin" };
+  const base = { session_id: "unsupported-after-pass" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", options);
+
+  const pendingResult = handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cat README.md" } },
+    "compatible",
+    options
+  );
+  assert.equal(
+    JSON.parse(pendingResult.stdout).hookSpecificOutput.permissionDecision,
+    "deny",
+    "denied while pending"
+  );
+
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_use_id: "darwin-pass",
+      tool_input: { file_path: controlTarget("pass") }
+    },
+    "compatible",
+    options
+  );
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "darwin-pass",
+      tool_input: { file_path: controlTarget("pass") },
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->\n" }
+    },
+    "compatible",
+    options
+  );
+
+  for (const command of ["cat README.md", "Remove-Item README.md", "rm -rf src"]) {
+    assert.equal(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+        "compatible",
+        options
+      ).stdout,
+      "",
+      `${command}: the hook is silent after pass`
     );
   }
 });
