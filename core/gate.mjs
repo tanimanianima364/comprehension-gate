@@ -197,10 +197,6 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (toolKind === "shell" && classifyShellCommand(input?.tool_input?.command) === "read") {
       return allowResult();
     }
-    if (toolKind === "network" && env.COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION === "1") {
-      return allowResult();
-    }
-
     if (gate.satisfied) {
       return allowResult();
     }
@@ -298,9 +294,6 @@ function classifyTool(toolName, provider = null) {
   }
   if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "harness";
-  }
-  if (NETWORK_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
-    return "network";
   }
   return "other";
 }
@@ -510,11 +503,9 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
-    : toolKind === "network"
-      ? " Network tools can trigger side effects, so they are denied while the gate is pending unless COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 is set."
-      : toolKind === "other"
-        ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
-        : "";
+    : toolKind === "other"
+      ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
+      : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,
@@ -623,14 +614,22 @@ const WRITE_TOOLS = new Set([
 ]);
 
 /*
- * Native read-only tools, keyed by provider: a name proves nothing across
- * hosts, and a Codex extension can present any plain tool name. Only verified
- * built-in names are listed. Codex has no name-based entry at all: it has
+ * Read-only tools, keyed by provider: a name proves nothing across hosts, and
+ * a Codex extension can present any plain tool name. Only verified built-in
+ * names are listed.
+ *
+ * The network reads belong here rather than behind a separate refusal. This
+ * gate protects one project from mutation before understanding, and fetching
+ * or searching cannot mutate it. A remote resource can be changed over HTTP,
+ * but that is not this project and the hook allows these tools the moment the
+ * gate passes, so it never protected one; refusing them only cost the agent
+ * its research. An operator who wants them closed has the host permission
+ * model for that. Codex has no name-based entry at all: it has
  * no native local reader on its hook path and inspects through the pinned
  * bridge commands instead.
  */
 const READ_ONLY_TOOLS_BY_PROVIDER = {
-  claude: new Set(["glob", "grep", "read"]),
+  claude: new Set(["glob", "grep", "read", "webfetch", "websearch"]),
   cursor: new Set(["grep", "read"]),
   kiro: new Set(["fs_read", "read"]),
   // Intentionally empty: a Codex built-in such as view_image can be disabled
@@ -657,13 +656,6 @@ const HARNESS_TOOLS_BY_PROVIDER = {
     "taskupdate",
     "todowrite"
   ])
-};
-
-// Denied while pending by default: an HTTP request can have side effects.
-// Keyed by provider for the same reason as the read-only list; the opt-in
-// only ever covers a host's own built-in network tools.
-const NETWORK_TOOLS_BY_PROVIDER = {
-  claude: new Set(["webfetch", "websearch"])
 };
 
 /*

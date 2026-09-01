@@ -53,31 +53,32 @@ test("Cursor Glob is not a supported Cursor hook tool and is denied while pendin
   assert.equal(JSON.parse(result.stdout).permission, "deny");
 });
 
-test("the network opt-in only covers the provider's own built-in network tools", () => {
-  const fixture = createFixture({ PLUGIN_ROOT: "/plugin", COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION: "1" });
-  for (const toolName of ["web_search", "web_fetch", "WebFetch"]) {
-    const result = pending(toolName, fixture);
-    const output = result.stdout ? JSON.parse(result.stdout) : null;
-    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must stay denied on Codex even with the opt-in`);
-  }
-});
-
-test("pending gates deny network tools by default", () => {
+/*
+ * A network read is a read. The gate protects this project from mutation
+ * before understanding, and neither of these tools can mutate it. Denying them
+ * cost the agent its research and bought nothing the gate ever promised: a
+ * remote resource is not the project, and the hook allows these tools the
+ * moment the gate passes, so it never protected one.
+ */
+test("pending gates allow the provider's built-in network reads", () => {
   for (const toolName of NETWORK_TOOLS) {
     const result = pending(toolName, createFixture());
-    const output = result.stdout ? JSON.parse(result.stdout) : null;
-    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied while pending`);
-    assert.match(output.hookSpecificOutput.permissionDecisionReason, /network/i, toolName);
+    assert.equal(result.stdout, "", `${toolName} should be allowed while pending`);
+    assert.equal(result.exitCode, 0, toolName);
   }
 });
 
-test("COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 opts network tools back in while pending", () => {
-  for (const toolName of NETWORK_TOOLS) {
-    const result = pending(toolName, createFixture({ COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION: "1" }));
-    assert.equal(result.stdout, "", `${toolName} should be allowed with the opt-in`);
+test("the network allowlist is provider-specific: generic names are not trusted on other providers", () => {
+  for (const toolName of ["web_search", "web_fetch", "WebFetch"]) {
+    const result = pending(toolName, createFixture({ PLUGIN_ROOT: "/plugin" }));
+    const output = result.stdout ? JSON.parse(result.stdout) : null;
+    assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny", `${toolName} must be denied on Codex`);
   }
-  const off = pending("WebFetch", createFixture({ COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION: "0" }));
-  assert.equal(JSON.parse(off.stdout).hookSpecificOutput.permissionDecision, "deny", "only \"1\" enables the opt-in");
+  for (const mode of ["cursor", "kiro"]) {
+    const result = pending("WebFetch", createFixture(), mode);
+    const denied = mode === "kiro" ? result.exitCode === 2 : JSON.parse(result.stdout).permission === "deny";
+    assert.ok(denied, `${mode}: WebFetch must be denied`);
+  }
 });
 
 function pending(toolName, fixture, mode = "compatible") {
