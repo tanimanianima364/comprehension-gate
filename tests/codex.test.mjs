@@ -368,13 +368,21 @@ test("Codex inspection exception accepts only canonical commands for the active 
     ["README.md"],
     workspace,
     { runtime: "/untrusted/node" }
-  )[0].command;
+  );
   const wrongEntrypoint = inspectionCommand(
     "inspect-read",
     ["README.md"],
     workspace,
     { entrypoint: "/untrusted/gate.mjs" }
-  )[0].command;
+  );
+
+  // Each candidate must be a real command string. A candidate that is
+  // undefined is refused for being unclassifiable rather than for failing the
+  // pinning, which would make the assertions below pass without testing it.
+  for (const [label, value] of Object.entries({ command, wrongRoot, wrongRuntime, wrongEntrypoint })) {
+    assert.equal(typeof value, "string", label);
+    assert.ok(value.length > 0, label);
+  }
 
   for (const [name, candidate, overrides = {}] of [
     ["leading whitespace", ` ${command}`],
