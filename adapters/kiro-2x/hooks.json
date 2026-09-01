@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "agentSpawn": [
+      {
+        "matcher": "*",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "matcher": "*",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "*",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "*",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      }
+    ]
+  }
+}
