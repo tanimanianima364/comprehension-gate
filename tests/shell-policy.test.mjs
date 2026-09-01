@@ -70,8 +70,13 @@ const WRITE_COMMANDS = [
   "make build",
   "/bin/rm README.md",
   "RM README.md",
-  // An executable extension must not hide a denylisted name; these are
-  // reachable from WSL as well as Windows.
+  // An executable extension must not hide a denylisted name. This is the WSL
+  // case rather than the Windows one: the platform is Linux, so the guard in
+  // handleHook never fires and the command table is what stops these.
+  "powershell.exe -Command Remove-Item README.md",
+  "pwsh -Command Remove-Item README.md",
+  "cmd.exe /c del README.md",
+  "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command x",
   "node.exe -e process.exit",
   "python3.EXE script.py",
   "npm.cmd test",
