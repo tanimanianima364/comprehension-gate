@@ -201,6 +201,51 @@ const ARGUMENT_SENSITIVE_WRITE_COMMANDS = [
   "find core -fprintf out.txt %p"
 ];
 
+/*
+ * The first token is not always the command: POSIX allows leading NAME=VALUE
+ * assignments, and several wrappers run their first operand instead. Both
+ * would otherwise present a name the tables do not match and classify as
+ * inspection.
+ */
+const PREFIXED_READ_COMMANDS = [
+  "LC_ALL=C grep -rn foo core",
+  "GIT_PAGER=cat git log --oneline",
+  "LC_ALL=C TZ=UTC cat README.md",
+  // Assignments with no command after them execute nothing.
+  "LC_ALL=C"
+];
+
+const PREFIXED_WRITE_COMMANDS = [
+  // The assignment prefix does not hide the command it runs.
+  "LC_ALL=C rm -rf src",
+  "FOO=1 npm test",
+  // Assignments that rebind command resolution or shell startup are refused
+  // even when the command that follows reads.
+  "PATH=/tmp cat README.md",
+  "PATH=/tmp rm -rf src",
+  "LD_PRELOAD=/tmp/x.so cat README.md",
+  "BASH_ENV=/tmp/x cat README.md",
+  "IFS=, cat README.md",
+  // Wrappers run their operand, so they are refused rather than unwrapped.
+  "command rm -rf src",
+  "command cat README.md",
+  "builtin cd /tmp",
+  "nice -n 10 rm -rf src",
+  "time npm test",
+  "stdbuf -o0 rm README.md",
+  "ionice -c3 rm README.md",
+  "taskset -c 0 rm README.md"
+];
+
+test("a leading assignment or wrapper cannot hide the command that runs", () => {
+  for (const command of PREFIXED_READ_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "read", command);
+  }
+  for (const command of PREFIXED_WRITE_COMMANDS) {
+    assert.equal(classifyShellCommand(command), "write", command);
+  }
+});
+
 test("argument-sensitive commands are judged by an allowlist of read-only flags", () => {
   for (const command of ARGUMENT_SENSITIVE_READ_COMMANDS) {
     assert.equal(classifyShellCommand(command), "read", command);

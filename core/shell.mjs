@@ -47,6 +47,11 @@ const WRITE_COMMANDS = new Set([
   "fish", "ksh", "node", "nohup", "osascript", "perl", "php", "powershell",
   "pwsh", "python", "python2", "python3", "ruby", "script", "setsid", "sh",
   "sudo", "timeout", "xargs", "zsh",
+  // Wrappers that run their first operand as a command. They are refused
+  // rather than unwrapped, matching how env, sudo, xargs, timeout, and nohup
+  // above are already handled.
+  "builtin", "chrt", "command", "ionice", "nice", "setarch", "stdbuf",
+  "taskset", "time",
   // Build, test, and package tooling: runs project-defined code.
   "bazel", "bundle", "cargo", "cmake", "composer", "dotnet", "gem", "go",
   "gradle", "make", "mvn", "ninja", "npm", "npx", "pip", "pip3", "pnpm",
@@ -93,6 +98,15 @@ const FIND_READ_PRIMARIES = new Set([
 
 // A leading-dash numeric operand (`-mtime -1`) is a value, not a flag.
 const NUMERIC_OPERAND = /^-\d+$/;
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Assignment targets that change which program a name resolves to, or what the
+// shell runs on startup. A prefix setting one of these is refused outright.
+const RESOLUTION_ASSIGNMENTS = new Set([
+  "BASHOPTS", "BASH_ENV", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "ENV",
+  "IFS", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD", "PATH", "SHELLOPTS"
+]);
 const REDIRECT_TARGET = "/dev/null";
 const VARIABLE_NAME = /[A-Za-z_]/;
 
@@ -364,16 +378,36 @@ function readRedirect(command, start) {
 }
 
 function isReadCommand(tokens) {
+  /*
+   * A segment may open with NAME=VALUE assignments, so the first token is not
+   * necessarily the command. Step over them to reach the name the tables are
+   * meant to match. An assignment that rebinds command resolution or shell
+   * startup is refused: PATH shadowing is an accepted residual only where the
+   * scan cannot see it, and here it is written out in the command itself.
+   */
+  let index = 0;
+  while (index < tokens.length && isAssignment(tokens[index])) {
+    if (RESOLUTION_ASSIGNMENTS.has(tokens[index].value.split("=", 1)[0])) {
+      return false;
+    }
+    index += 1;
+  }
+
+  const command = tokens[index];
+  // Assignments with no command after them execute nothing.
+  if (command === undefined) {
+    return true;
+  }
   // The denylist matches on the command name, so a name the scanner could not
   // resolve cannot be judged at all.
-  if (tokens[0].expanded) {
+  if (command.expanded) {
     return false;
   }
-  const name = commandName(tokens[0].value);
+  const name = commandName(command.value);
   if (WRITE_COMMANDS.has(name)) {
     return false;
   }
-  const rest = tokens.slice(1);
+  const rest = tokens.slice(index + 1);
   if (name === "git") {
     return !rest[0]?.expanded && GIT_READ_SUBCOMMANDS.has(rest[0]?.value);
   }
@@ -384,6 +418,13 @@ function isReadCommand(tokens) {
     return hasOnlyAllowedFlags(rest, FIND_READ_PRIMARIES);
   }
   return true;
+}
+
+// An expanded token is never treated as an assignment: its text is not fully
+// visible, so it falls through and is judged as the command name instead,
+// where an unresolved expansion already refuses.
+function isAssignment(token) {
+  return !token.expanded && ASSIGNMENT.test(token.value);
 }
 
 function hasOnlyAllowedFlags(rest, allowed) {
