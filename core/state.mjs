@@ -272,7 +272,7 @@ function overwriteGateState(provider, input, state, options) {
 function getSessionId(input, env = {}) {
   const sessionId = input?.session_id ?? input?.conversation_id ?? env?.KIRO_SESSION_ID;
   if (typeof sessionId !== "string" || sessionId.trim() === "") {
-    throw new GateStateError("Hook input is missing session_id/conversation_id.");
+    throw new GateStateError("Hook input is missing session_id/conversation_id, and KIRO_SESSION_ID is not set in the hook environment.");
   }
   return sessionId;
 }
