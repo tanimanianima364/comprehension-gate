@@ -28,6 +28,10 @@
  *
  * An expansion of either kind in the command-name position is refused: the
  * name is what the denylist matches on, so a hidden one cannot be judged.
+ *
+ * Every rule here reads the string as POSIX shell. The refusal for other
+ * platforms lives in handleHook rather than in this function, because the
+ * Codex control and inspection exceptions return before it would be called.
  */
 
 // Rejected outside quotes. These name no command that can be classified.
@@ -44,7 +48,7 @@ const WRITE_COMMANDS = new Set([
   // Interpreters and wrappers: these run arbitrary code, so the visible
   // command name says nothing about what gets written.
   "bash", "bun", "cmd", "csh", "dash", "deno", "doas", "env", "eval", "exec",
-  "fish", "ksh", "node", "nohup", "osascript", "perl", "php", "powershell",
+  "fish", "ksh", "node", "nohup", "perl", "php", "powershell",
   "pwsh", "python", "python2", "python3", "ruby", "script", "setsid", "sh",
   "sudo", "timeout", "xargs", "zsh",
   // Wrappers that run their first operand as a command. They are refused
@@ -104,8 +108,8 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Assignment targets that change which program a name resolves to, or what the
 // shell runs on startup. A prefix setting one of these is refused outright.
 const RESOLUTION_ASSIGNMENTS = new Set([
-  "BASHOPTS", "BASH_ENV", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "ENV",
-  "IFS", "LD_AUDIT", "LD_LIBRARY_PATH", "LD_PRELOAD", "PATH", "SHELLOPTS"
+  "BASHOPTS", "BASH_ENV", "ENV", "IFS", "LD_AUDIT", "LD_LIBRARY_PATH",
+  "LD_PRELOAD", "PATH", "SHELLOPTS"
 ]);
 const REDIRECT_TARGET = "/dev/null";
 const VARIABLE_NAME = /[A-Za-z_]/;

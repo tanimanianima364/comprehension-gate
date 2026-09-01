@@ -687,12 +687,7 @@ test("pending denies mutating commands through every ordinary shell tool alias",
 // inspection command's name gets through. This is the accepted residual
 // bypass documented in core/shell.mjs: the gate guards a cooperative agent,
 // and closing this hole would cost the exploration the gate is meant to keep.
-test("a PATH-shadowed read command is an accepted residual bypass while pending", t => {
-  if (process.platform === "win32") {
-    t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
-    return;
-  }
-
+test("a PATH-shadowed read command is an accepted residual bypass while pending", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-path-shadow-"));
   const binaryDirectory = path.join(directory, "bin");
   const sentinel = path.join(directory, "shadow-cat-ran");

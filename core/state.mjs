@@ -24,10 +24,6 @@ export function resolveStateDirectory(env = process.env) {
     return path.join(path.resolve(env.XDG_STATE_HOME), "comprehension-gate");
   }
 
-  if (process.platform === "win32" && env.LOCALAPPDATA) {
-    return path.join(path.resolve(env.LOCALAPPDATA), "comprehension-gate", "state");
-  }
-
   return path.join(os.homedir(), ".local", "state", "comprehension-gate");
 }
 
@@ -253,12 +249,8 @@ function writeJsonAtomically(filePath, value, options) {
   try {
     filesystem.renameSync(temporaryPath, filePath);
   } catch (error) {
-    if (process.platform !== "win32") {
-      safeUnlink(filesystem, temporaryPath);
-      throw error;
-    }
-    filesystem.copyFileSync(temporaryPath, filePath);
     safeUnlink(filesystem, temporaryPath);
+    throw error;
   }
 }
 

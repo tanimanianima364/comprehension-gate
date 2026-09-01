@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { handleHook } from "../core/gate.mjs";
+import { controlCommand, controlTarget, handleHook, inspectionCommand } from "../core/gate.mjs";
 import { classifyShellCommand } from "../core/shell.mjs";
 
 // Constructs that cannot be broken into independently classifiable commands,
@@ -70,8 +70,13 @@ const WRITE_COMMANDS = [
   "make build",
   "/bin/rm README.md",
   "RM README.md",
-  // An executable extension must not hide a denylisted name; these are
-  // reachable from WSL as well as Windows.
+  // An executable extension must not hide a denylisted name. This is the WSL
+  // case rather than the Windows one: the platform is Linux, so the guard in
+  // handleHook never fires and the command table is what stops these.
+  "powershell.exe -Command Remove-Item README.md",
+  "pwsh -Command Remove-Item README.md",
+  "cmd.exe /c del README.md",
+  "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command x",
   "node.exe -e process.exit",
   "python3.EXE script.py",
   "npm.cmd test",
@@ -255,6 +260,144 @@ test("argument-sensitive commands are judged by an allowlist of read-only flags"
   }
 });
 
+/*
+ * Every rule in the classifier reads the command as POSIX shell. Windows does
+ * not run one, so the scan would apply the wrong grammar and the command table
+ * the wrong names -- `Remove-Item` matches nothing and would classify as
+ * inspection. The gate refuses every shell tool there instead.
+ *
+ * The refusal lives in handleHook rather than in the classifier, because the
+ * Codex control and inspection exceptions return before the classifier is ever
+ * consulted; a guard inside classifyShellCommand would not be reached by them.
+ * It keys on the tool kind rather than the provider, so native reads stay
+ * available on every host and Cursor and Kiro can still pass through one.
+ */
+test("no shell tool is allowed on an unsupported platform", () => {
+  for (const toolName of ["Bash", "Shell", "execute_bash"]) {
+    for (const command of ["cat README.md", "Get-Content README.md", "Remove-Item README.md"]) {
+      const denied = pending(toolName, command, {}, { platform: "darwin" });
+      assert.equal(
+        JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+        "deny",
+        `${toolName}: ${command}`
+      );
+      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /until the gate passes/);
+    }
+  }
+  assert.equal(pending("Bash", "cat README.md", {}, { platform: "linux" }).stdout, "", "Linux is unaffected");
+});
+
+test("the Codex control and inspection exceptions are closed on an unsupported platform", () => {
+  const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
+  const base = { session_id: "unsupported-codex", cwd: process.cwd() };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
+
+  // These commands are allowed on POSIX by the exact-match exceptions that run
+  // before the classifier, which is exactly why the guard cannot live inside it.
+  for (const command of [controlCommand("pass"), inspectionCommand("inspect-read", ["README.md"], process.cwd())]) {
+    assert.equal(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+        "compatible",
+        fixture
+      ).stdout,
+      "",
+      "allowed on Linux"
+    );
+    const denied = handleHook(
+      { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+      "compatible",
+      { ...fixture, platform: "darwin" }
+    );
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      "refused off Linux"
+    );
+  }
+});
+
+/*
+ * The refusal belongs to the pending path only. After pass this hook goes
+ * silent and the host's permission model is the authority on every platform,
+ * so carrying it further would leave the shell permanently unusable rather
+ * than merely unjudged.
+ */
+test("an unsupported platform regains the shell once the gate passes", () => {
+  const fixture = createFixture();
+  const options = { ...fixture, platform: "darwin" };
+  const base = { session_id: "unsupported-after-pass" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", options);
+
+  const pendingResult = handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cat README.md" } },
+    "compatible",
+    options
+  );
+  assert.equal(
+    JSON.parse(pendingResult.stdout).hookSpecificOutput.permissionDecision,
+    "deny",
+    "denied while pending"
+  );
+
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_use_id: "darwin-pass",
+      tool_input: { file_path: controlTarget("pass") }
+    },
+    "compatible",
+    options
+  );
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "darwin-pass",
+      tool_input: { file_path: controlTarget("pass") },
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->\n" }
+    },
+    "compatible",
+    options
+  );
+
+  for (const command of ["cat README.md", "Remove-Item README.md", "rm -rf src"]) {
+    assert.equal(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+        "compatible",
+        options
+      ).stdout,
+      "",
+      `${command}: the hook is silent after pass`
+    );
+  }
+});
+
+test("native reads still pass the gate on an unsupported platform", () => {
+  const fixture = createFixture();
+  const base = { session_id: "unsupported-native" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", { ...fixture, platform: "darwin" });
+  assert.equal(
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_use_id: "unsupported-pass",
+        tool_input: { file_path: controlTarget("pass") }
+      },
+      "compatible",
+      { ...fixture, platform: "darwin" }
+    ).stdout,
+    "",
+    "a native read of the control target is still allowed off Linux"
+  );
+});
+
 test("redirection is allowed only where it cannot name a write target", () => {
   for (const command of REDIRECT_READ_COMMANDS) {
     assert.equal(classifyShellCommand(command), "read", command);
@@ -376,8 +519,8 @@ test("a missing or non-string command is denied rather than treated as inspectio
   }
 });
 
-function pending(toolName, command, extraEnv = {}) {
-  const fixture = createFixture(extraEnv);
+function pending(toolName, command, extraEnv = {}, options = {}) {
+  const fixture = { ...createFixture(extraEnv), ...options };
   const session = { session_id: `shell-${toolName}-${command}` };
   handleHook({ ...session, hook_event_name: "SessionStart" }, "compatible", fixture);
   return handleHook(

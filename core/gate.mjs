@@ -12,7 +12,7 @@ import {
   readGateState,
   resetGate
 } from "./state.mjs";
-import { buildPinnedEntrypointCommands } from "./command.mjs";
+import { buildPinnedEntrypointCommand } from "./command.mjs";
 import { classifyShellCommand } from "./shell.mjs";
 import {
   decodeInspectionArgument,
@@ -38,22 +38,17 @@ export function controlTarget(action) {
 }
 
 export function controlCommand(action, options = {}) {
-  return controlCommands(action, options)[0].command;
-}
-
-export function controlCommands(action, options = {}) {
   if (!CONTROL_ACTIONS.has(action)) {
     throw new Error(`Unknown control action: ${action}`);
   }
-  return buildPinnedEntrypointCommands(
-    SCRIPT_PATH,
+  return buildPinnedEntrypointCommand(
+    options.entrypoint ?? SCRIPT_PATH,
     action,
-    options.runtime ?? process.execPath,
-    options.platform ?? process.platform
+    options.runtime ?? process.execPath
   );
 }
 
-export function inspectionCommands(action, values, workspace, options = {}) {
+export function inspectionCommand(action, values, workspace, options = {}) {
   if (!INSPECTION_ACTIONS.has(action)) {
     throw new Error(`Unknown inspection action: ${action}`);
   }
@@ -61,11 +56,11 @@ export function inspectionCommands(action, values, workspace, options = {}) {
   if (!Array.isArray(values) || values.length !== expectedArity) {
     throw new Error(`${action} expects ${expectedArity} values.`);
   }
-  const normalizedWorkspace = normalizeHookWorkspace(workspace, options.platform ?? process.platform);
+  const normalizedWorkspace = normalizeHookWorkspace(workspace);
   if (!normalizedWorkspace) {
     throw new Error("Inspection workspace must be an absolute path.");
   }
-  return inspectionCommandsFromEncoded(
+  return inspectionCommandFromEncoded(
     action,
     [encodeInspectionArgument(normalizedWorkspace), ...values.map(encodeInspectionArgument)],
     options
@@ -79,18 +74,18 @@ export function renderInstructions(provider = "claude", options = {}) {
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
     .replaceAll(
       "{{PASS_CONTROL}}",
-      usesShellControl ? formatCodexControlCommands("pass", commandOptions) : controlTarget("pass")
+      usesShellControl ? controlCommand("pass", commandOptions) : controlTarget("pass")
     )
     .replaceAll(
       "{{BYPASS_CONTROL}}",
       usesShellControl
-        ? formatCodexControlCommands("bypass-low", commandOptions)
+        ? controlCommand("bypass-low", commandOptions)
         : controlTarget("bypass-low")
     )
     .replaceAll(
       "{{CONTROL_METHOD}}",
       usesShellControl
-        ? "In Codex, run one command exactly as shown for the active shell. Apart from the inspection commands below, these are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
+        ? "In Codex, run the command exactly as shown. Apart from the inspection commands below, these are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
         : "Read the path exactly as shown with the host's native file-reading tool. Do not use a shell command to read it."
     )
     .replaceAll(
@@ -108,7 +103,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
   // Only trusted lifecycle events may record the workspace Codex inspection is pinned to.
-  const trustedReset = { workspace: normalizeHookWorkspace(input?.cwd, commandOptions.platform) };
+  const trustedReset = { workspace: normalizeHookWorkspace(input?.cwd) };
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
   const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
 
@@ -159,6 +154,35 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     const state = ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name, provider);
+    const gate = checkGate(provider, input, stateOptions);
+
+    /*
+     * The shell rules are written for the one platform this plugin is tested
+     * on. Anywhere else the scan may apply the wrong grammar and the command
+     * table the wrong names -- a PowerShell `Remove-Item` matches nothing and
+     * would look like inspection -- so while the gate is pending, refuse every
+     * shell tool rather than guess. Only the shell closes: native reads still
+     * work, so the gate still functions elsewhere with less available to it.
+     *
+     * It applies only while pending. After pass this hook goes silent and the
+     * host's permission model is the authority, on every platform; carrying
+     * the refusal past that point would leave the shell permanently unusable
+     * rather than merely unjudged.
+     *
+     * Within the pending path it sits ahead of the control and inspection
+     * exceptions on purpose. Those match a command exactly and return before
+     * the classifier is ever consulted, so a guard inside classifyShellCommand
+     * would not be reached by them. Keying on the tool kind rather than the
+     * provider leaves native reads working on every host, which is how Claude
+     * Code, Cursor, and Kiro still pass here.
+     */
+    if (!gate.satisfied && (options.platform ?? process.platform) !== "linux" && toolKind === "shell") {
+      return denyResult(
+        mode,
+        "Comprehension Gate judges shell commands as Linux shell commands and cannot judge them on this platform, so no shell command is available until the gate passes. Use the host's native file-reading and search tools."
+      );
+    }
+
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
@@ -177,7 +201,6 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    const gate = checkGate(provider, input, stateOptions);
     if (gate.satisfied) {
       return allowResult();
     }
@@ -350,7 +373,7 @@ function codexShellControlAction(input, commandOptions) {
     return null;
   }
   for (const action of CONTROL_ACTIONS) {
-    if (controlCommands(action, commandOptions).some(({ command: expected }) => command === expected)) {
+    if (command === controlCommand(action, commandOptions)) {
       return action;
     }
   }
@@ -362,13 +385,13 @@ function codexInspectionAction(input, state, commandOptions) {
     return null;
   }
   const command = input?.tool_input?.command;
-  const workspace = normalizeHookWorkspace(input?.cwd, commandOptions.platform);
+  const workspace = normalizeHookWorkspace(input?.cwd);
   if (typeof command !== "string" || !workspace) {
     return null;
   }
   // Pin inspection to the canonical workspace recorded by the last trusted
   // lifecycle event; a per-call cwd may only narrow the readable tree.
-  if (state.workspace === null || !isSameOrDescendant(state.workspace, workspace, commandOptions.platform)) {
+  if (state.workspace === null || !isSameOrDescendant(state.workspace, workspace)) {
     return null;
   }
 
@@ -392,8 +415,7 @@ function codexInspectionAction(input, state, commandOptions) {
     } catch {
       continue;
     }
-    if (inspectionCommandsFromEncoded(action, encodedArguments, commandOptions)
-      .some(({ command: expected }) => command === expected)) {
+    if (command === inspectionCommandFromEncoded(action, encodedArguments, commandOptions)) {
       return action;
     }
   }
@@ -495,8 +517,8 @@ function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd)
         : "";
   const controlInstruction = provider === "codex"
     ? [
-        `After mastery, run the exact Codex pass command for the active shell: ${formatCodexControlCommands("pass", commandOptions)}`,
-        `For a genuinely LOW change only, run the exact Codex LOW bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)}`
+        `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,
+        `For a genuinely LOW change only, run this exact Codex LOW bypass command: ${controlCommand("bypass-low", commandOptions)}`
       ]
     : [
         `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
@@ -518,92 +540,66 @@ function promptResetContext(provider, commandOptions = {}, cwd) {
   if (provider !== "codex") {
     return nativeReadContext;
   }
-  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run the exact Codex pass command for the active shell only after the answer demonstrates understanding: ${formatCodexControlCommands("pass", commandOptions)} For a genuinely LOW change only, run the exact bypass command for the active shell: ${formatCodexControlCommands("bypass-low", commandOptions)} ${formatCodexInspectionInstructions(cwd, commandOptions)}`;
+  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run this exact Codex pass command only after the answer demonstrates understanding: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low", commandOptions)} ${formatCodexInspectionInstructions(cwd, commandOptions)}`;
 }
 
 function controlCommandOptions(options = {}) {
   return {
     runtime: options.runtime ?? process.execPath,
-    platform: options.platform ?? process.platform,
     entrypoint: options.entrypoint
   };
 }
 
-function formatCodexControlCommands(action, commandOptions = {}) {
-  const labels = {
-    powershell: "PowerShell",
-    cmd: "cmd.exe",
-    posix: commandOptions.platform === "win32" ? "Bash / Sh" : "Bash / Sh / POSIX shell"
-  };
-  return controlCommands(action, commandOptions)
-    .map(({ shell, command }) => `${labels[shell]}: ${command}`)
-    .join("\n");
-}
-
-function inspectionCommandsFromEncoded(action, encodedArguments, options = {}) {
-  return buildPinnedEntrypointCommands(
+function inspectionCommandFromEncoded(action, encodedArguments, options = {}) {
+  return buildPinnedEntrypointCommand(
     options.entrypoint ?? SCRIPT_PATH,
     action,
     options.runtime ?? process.execPath,
-    options.platform ?? process.platform,
     encodedArguments
   );
 }
 
 function formatCodexInspectionInstructions(cwd, commandOptions = {}) {
-  const workspace = normalizeHookWorkspace(cwd, commandOptions.platform);
+  const workspace = normalizeHookWorkspace(cwd);
   if (!workspace) {
     return "Codex inspection commands are unavailable because the hook did not supply an absolute workspace cwd; remain fail-closed and do not use another shell command.";
   }
   const root = encodeInspectionArgument(workspace);
-  const read = inspectionCommandsFromEncoded(
+  const read = inspectionCommandFromEncoded(
     "inspect-read",
     [root, "BASE64URL_PATH"],
     commandOptions
   );
-  const search = inspectionCommandsFromEncoded(
+  const search = inspectionCommandFromEncoded(
     "inspect-search",
     [root, "BASE64URL_PATTERN", "BASE64URL_ROOT"],
     commandOptions
   );
-  const labels = {
-    powershell: "PowerShell",
-    cmd: "cmd.exe",
-    posix: commandOptions.platform === "win32" ? "Bash / Sh" : "Bash / Sh / POSIX shell"
-  };
-  const format = commands => commands
-    .map(({ shell, command }) => `${labels[shell]}: ${command}`)
-    .join("\n");
   return [
     "Codex may inspect this workspace before pass only through these pinned commands.",
-    "Replace each BASE64URL_* placeholder with the unpadded base64url encoding of its UTF-8 value; keep every other byte exact and use the active shell's form.",
+    "Replace each BASE64URL_* placeholder with the unpadded base64url encoding of its UTF-8 value; keep every other byte exact.",
     "Paths and roots must be workspace-relative. Examples: README.md = UkVBRE1FLm1k, auth = YXV0aA, . = Lg.",
-    `Read one UTF-8 file:\n${format(read)}`,
-    `Search UTF-8 files for a literal string:\n${format(search)}`
+    `Read one UTF-8 file:\n${read}`,
+    `Search UTF-8 files for a literal string:\n${search}`
   ].join("\n");
 }
 
-function isSameOrDescendant(root, candidate, platform = process.platform) {
-  const pathApi = platform === "win32" ? path.win32 : path.posix;
-  const relative = pathApi.relative(root, candidate);
+function isSameOrDescendant(root, candidate) {
+  const relative = path.relative(root, candidate);
   if (relative === "") {
     return true;
   }
-  return !pathApi.isAbsolute(relative) && relative.split(pathApi.sep)[0] !== "..";
+  return !path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..";
 }
 
-function normalizeHookWorkspace(value, platform = process.platform) {
+function normalizeHookWorkspace(value) {
   if (typeof value !== "string" || value.length === 0) {
     return null;
   }
-  const pathApi = platform === "win32" ? path.win32 : path.posix;
-  if (!pathApi.isAbsolute(value)) {
+  if (!path.isAbsolute(value)) {
     return null;
   }
-  const normalized = pathApi.normalize(value);
-  if (platform !== process.platform) {
-    return normalized;
-  }
+  const normalized = path.normalize(value);
   try {
     const canonical = fs.realpathSync(normalized);
     return fs.statSync(canonical).isDirectory() ? canonical : null;
