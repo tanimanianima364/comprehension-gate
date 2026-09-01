@@ -524,7 +524,9 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
- : "";
+    : toolKind === "write"
+      ? " Writing is this tool's primary use, so it is denied while the gate is pending. Reading, searching, and other tools are available."
+      : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,

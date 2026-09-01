@@ -8,7 +8,11 @@ import { controlTarget, handleHook } from "../core/gate.mjs";
 const HARNESS_TOOLS = ["AskUserQuestion", "LS", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
 const DELEGATING_TOOLS = ["Skill", "Agent", "Task"];
 const NETWORK_TOOLS = ["WebFetch", "WebSearch"];
-const WRITE_TOOLS = ["Write", "Edit", "NotebookEdit", "apply_patch", "fs_write", "EnterWorktree"];
+const WRITE_TOOLS = [
+  "Write", "WriteFile", "Edit", "NotebookEdit", "apply_patch", "str_replace",
+  "str_replace_based_edit_tool", "Delete", "delete_file", "fs_write", "fsWrite",
+  "EnterWorktree", "ExitWorktree"
+];
 
 /*
  * The gate allows by default and denies a named set. A tool is on that set
