@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { handleHook } from "../core/gate.mjs";
+import { controlCommand, controlTarget, handleHook, inspectionCommand } from "../core/gate.mjs";
 import { classifyShellCommand } from "../core/shell.mjs";
 
 // Constructs that cannot be broken into independently classifiable commands,
@@ -259,15 +259,78 @@ test("argument-sensitive commands are judged by an allowlist of read-only flags"
  * Every rule in the classifier reads the command as POSIX shell. Windows does
  * not run one, so the scan would apply the wrong grammar and the command table
  * the wrong names -- `Remove-Item` matches nothing and would classify as
- * inspection. Refusing there keeps that failure closed. Only the shell closes;
- * native reads and searches are untouched, so a Windows host can still inspect
- * and still pass through a native read.
+ * inspection. The gate refuses every shell tool there instead.
+ *
+ * The refusal lives in handleHook rather than in the classifier, because the
+ * Codex control and inspection exceptions return before the classifier is ever
+ * consulted; a guard inside classifyShellCommand would not be reached by them.
+ * It keys on the tool kind rather than the provider, so native reads stay
+ * available on every host and Cursor and Kiro can still pass through one.
  */
-test("the classifier refuses every shell command on a non-POSIX platform", () => {
-  for (const command of ["cat README.md", "Get-Content README.md", "Remove-Item README.md"]) {
-    assert.equal(classifyShellCommand(command, "win32"), "write", command);
-    assert.equal(classifyShellCommand(command, "linux"), "read", `${command} on POSIX`);
+test("no shell tool is allowed on a non-POSIX platform", () => {
+  for (const toolName of ["Bash", "Shell", "execute_bash"]) {
+    for (const command of ["cat README.md", "Get-Content README.md", "Remove-Item README.md"]) {
+      const denied = pending(toolName, command, {}, { platform: "win32" });
+      assert.equal(
+        JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+        "deny",
+        `${toolName}: ${command}`
+      );
+      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /POSIX/);
+    }
   }
+  assert.equal(pending("Bash", "cat README.md", {}, { platform: "linux" }).stdout, "", "POSIX is unaffected");
+});
+
+test("the Codex control and inspection exceptions are closed on a non-POSIX platform", () => {
+  const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
+  const base = { session_id: "win32-codex", cwd: process.cwd() };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
+
+  // These commands are allowed on POSIX by the exact-match exceptions that run
+  // before the classifier, which is exactly why the guard cannot live inside it.
+  for (const command of [controlCommand("pass"), inspectionCommand("inspect-read", ["README.md"], process.cwd())]) {
+    assert.equal(
+      handleHook(
+        { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+        "compatible",
+        fixture
+      ).stdout,
+      "",
+      "allowed on POSIX"
+    );
+    const denied = handleHook(
+      { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
+      "compatible",
+      { ...fixture, platform: "win32" }
+    );
+    assert.equal(
+      JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
+      "deny",
+      "refused on win32"
+    );
+  }
+});
+
+test("native reads still pass the gate on a non-POSIX platform", () => {
+  const fixture = createFixture({ platform: "win32" });
+  const base = { session_id: "win32-native" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", { ...fixture, platform: "win32" });
+  assert.equal(
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_use_id: "win32-pass",
+        tool_input: { file_path: controlTarget("pass") }
+      },
+      "compatible",
+      { ...fixture, platform: "win32" }
+    ).stdout,
+    "",
+    "a native read of the control target is still allowed on win32"
+  );
 });
 
 test("redirection is allowed only where it cannot name a write target", () => {
@@ -391,8 +454,8 @@ test("a missing or non-string command is denied rather than treated as inspectio
   }
 });
 
-function pending(toolName, command, extraEnv = {}) {
-  const fixture = createFixture(extraEnv);
+function pending(toolName, command, extraEnv = {}, options = {}) {
+  const fixture = { ...createFixture(extraEnv), ...options };
   const session = { session_id: `shell-${toolName}-${command}` };
   handleHook({ ...session, hook_event_name: "SessionStart" }, "compatible", fixture);
   return handleHook(

@@ -28,6 +28,10 @@
  *
  * An expansion of either kind in the command-name position is refused: the
  * name is what the denylist matches on, so a hidden one cannot be judged.
+ *
+ * Every rule here reads the string as POSIX shell. The refusal for other
+ * platforms lives in handleHook rather than in this function, because the
+ * Codex control and inspection exceptions return before it would be called.
  */
 
 // Rejected outside quotes. These name no command that can be classified.
@@ -110,17 +114,7 @@ const RESOLUTION_ASSIGNMENTS = new Set([
 const REDIRECT_TARGET = "/dev/null";
 const VARIABLE_NAME = /[A-Za-z_]/;
 
-export function classifyShellCommand(command, platform = process.platform) {
-  /*
-   * Every rule here reads the string as POSIX shell. On Windows the shell is
-   * not one, so the scan would be applying the wrong grammar and the command
-   * table the wrong names -- `Remove-Item` matches nothing and would classify
-   * as inspection. That fails open, so refuse instead. Only the shell closes;
-   * native reads and searches are unaffected and still work there.
-   */
-  if (platform === "win32") {
-    return "write";
-  }
+export function classifyShellCommand(command) {
   if (typeof command !== "string") {
     return "write";
   }
