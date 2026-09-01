@@ -182,9 +182,7 @@ function inspectSearch(workspace, pattern, requestedRoot) {
 }
 
 function resolveInside(workspace, requestedPath) {
-  // The win32 test is input validation, not Windows support: it stops a
-  // caller-supplied `C:\...` from being resolved as a relative name here.
-  if (path.isAbsolute(requestedPath) || path.win32.isAbsolute(requestedPath)) {
+  if (path.isAbsolute(requestedPath)) {
     throw new Error("Inspection paths must be relative to the workspace.");
   }
   const candidate = fs.realpathSync(path.resolve(workspace, requestedPath));

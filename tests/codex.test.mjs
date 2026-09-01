@@ -97,7 +97,7 @@ test("a failed Codex control result cannot pass the gate", () => {
   assert.equal(allowed.stdout, "");
 });
 
-test("Codex completes pass and LOW bypass through only the exact pinned Bash control", t => {
+test("Codex completes pass and LOW bypass through only the exact pinned Bash control", () => {
   for (const action of ["pass", "bypass-low"]) {
     const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
     const base = {
@@ -140,11 +140,7 @@ test("Codex completes pass and LOW bypass through only the exact pinned Bash con
 
     const command = controlCommand(action);
     assert.equal(command.startsWith("node "), false);
-    if (process.platform === "win32") {
-      assert.equal(command.includes(process.execPath), false);
-    } else {
-      assert.match(command, new RegExp(escapeRegExp(process.execPath)));
-    }
+    assert.match(command, new RegExp(escapeRegExp(process.execPath)));
     for (const alteredCommand of [
       ` ${command}`,
       `${command} `,
@@ -204,23 +200,11 @@ test("Codex completes pass and LOW bypass through only the exact pinned Bash con
       `${action}: arm alone did not satisfy the gate`
     );
 
-    let result;
-    if (process.platform === "win32") {
-      t.diagnostic("Native command execution is covered by the Windows-conditional command test.");
-      result = {
-        status: 0,
-        stdout: action === "pass"
-          ? "<!-- comprehension-gate:pass -->\n"
-          : "<!-- comprehension-gate:bypass-low -->\n",
-        stderr: ""
-      };
-    } else {
-      result = spawnSync(command, {
-        encoding: "utf8",
-        shell: "/bin/sh",
-        env: fixture.env
-      });
-    }
+    const result = spawnSync(command, {
+      encoding: "utf8",
+      shell: "/bin/sh",
+      env: fixture.env
+    });
     assert.equal(result.status, 0, result.stderr);
 
     handleHook(
@@ -247,12 +231,7 @@ test("Codex completes pass and LOW bypass through only the exact pinned Bash con
   }
 });
 
-test("Codex pinned control command ignores PATH-shadowed node", t => {
-  if (process.platform === "win32") {
-    t.skip("POSIX PATH-shadow fixture is unavailable on Windows");
-    return;
-  }
-
+test("Codex pinned control command ignores PATH-shadowed node", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-node-shadow-"));
   const binaryDirectory = path.join(directory, "bin");
   const sentinel = path.join(directory, "shadow-node-ran");
@@ -275,12 +254,7 @@ test("Codex pinned control command ignores PATH-shadowed node", t => {
   assert.equal(fs.existsSync(sentinel), false, "pinned control used PATH-shadowed node");
 });
 
-test("Codex inspection commands read and search the hook workspace without satisfying the gate", t => {
-  if (process.platform === "win32") {
-    t.skip("POSIX production-chain fixture is unavailable on Windows");
-    return;
-  }
-
+test("Codex inspection commands read and search the hook workspace without satisfying the gate", () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-inspect-a-"));
   const otherWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-inspect-b-"));
   fs.mkdirSync(path.join(workspace, "src"));

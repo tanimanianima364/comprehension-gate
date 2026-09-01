@@ -23,10 +23,8 @@ test("inspection read stays inside the canonical workspace and accepts the size 
     path.relative(workspace, path.join(outside, "secret.txt")),
     path.join(outside, "secret.txt")
   ];
-  if (process.platform !== "win32") {
-    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(workspace, "escape-link"));
-    candidates.push("escape-link");
-  }
+  fs.symlinkSync(path.join(outside, "secret.txt"), path.join(workspace, "escape-link"));
+  candidates.push("escape-link");
 
   assert.equal(runRead(workspace, "limit.txt").length, 256 * 1024 + 1);
   for (const candidate of candidates) {
@@ -40,9 +38,7 @@ test("inspection search is literal, bounded, and never follows directory symlink
   fs.mkdirSync(path.join(workspace, "src"));
   fs.writeFileSync(path.join(workspace, "src", "literal.txt"), "prefix a.*b suffix\n");
   fs.writeFileSync(path.join(outside, "secret.txt"), "aZZb outside-secret\n");
-  if (process.platform !== "win32") {
-    fs.symlinkSync(outside, path.join(workspace, "src", "external"), "dir");
-  }
+  fs.symlinkSync(outside, path.join(workspace, "src", "external"), "dir");
 
   const literal = runSearch(workspace, "a.*b", ".");
   assert.match(literal, /src\/literal\.txt:1/);
@@ -50,9 +46,7 @@ test("inspection search is literal, bounded, and never follows directory symlink
   assert.match(literal, /\[read-token:[A-Za-z0-9_-]+\]/);
   assert.equal(runSearch(workspace, "aZZb", "."), "");
   assert.throws(() => runSearch(workspace, "x".repeat(257), "."));
-  if (process.platform !== "win32") {
-    assert.throws(() => runSearch(workspace, "secret", "src/external"));
-  }
+  assert.throws(() => runSearch(workspace, "secret", "src/external"));
 
   for (let index = 0; index < 205; index += 1) {
     fs.writeFileSync(path.join(workspace, "src", `match-${index}.txt`), "needle\n");

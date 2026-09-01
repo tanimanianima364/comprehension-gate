@@ -267,24 +267,24 @@ test("argument-sensitive commands are judged by an allowlist of read-only flags"
  * It keys on the tool kind rather than the provider, so native reads stay
  * available on every host and Cursor and Kiro can still pass through one.
  */
-test("no shell tool is allowed on a non-POSIX platform", () => {
+test("no shell tool is allowed on an unsupported platform", () => {
   for (const toolName of ["Bash", "Shell", "execute_bash"]) {
     for (const command of ["cat README.md", "Get-Content README.md", "Remove-Item README.md"]) {
-      const denied = pending(toolName, command, {}, { platform: "win32" });
+      const denied = pending(toolName, command, {}, { platform: "darwin" });
       assert.equal(
         JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
         "deny",
         `${toolName}: ${command}`
       );
-      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /POSIX/);
+      assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /Linux only/);
     }
   }
-  assert.equal(pending("Bash", "cat README.md", {}, { platform: "linux" }).stdout, "", "POSIX is unaffected");
+  assert.equal(pending("Bash", "cat README.md", {}, { platform: "linux" }).stdout, "", "Linux is unaffected");
 });
 
-test("the Codex control and inspection exceptions are closed on a non-POSIX platform", () => {
+test("the Codex control and inspection exceptions are closed on an unsupported platform", () => {
   const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
-  const base = { session_id: "win32-codex", cwd: process.cwd() };
+  const base = { session_id: "unsupported-codex", cwd: process.cwd() };
   handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", fixture);
 
   // These commands are allowed on POSIX by the exact-match exceptions that run
@@ -297,39 +297,39 @@ test("the Codex control and inspection exceptions are closed on a non-POSIX plat
         fixture
       ).stdout,
       "",
-      "allowed on POSIX"
+      "allowed on Linux"
     );
     const denied = handleHook(
       { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } },
       "compatible",
-      { ...fixture, platform: "win32" }
+      { ...fixture, platform: "darwin" }
     );
     assert.equal(
       JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision,
       "deny",
-      "refused on win32"
+      "refused off Linux"
     );
   }
 });
 
-test("native reads still pass the gate on a non-POSIX platform", () => {
-  const fixture = createFixture({ platform: "win32" });
-  const base = { session_id: "win32-native" };
-  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", { ...fixture, platform: "win32" });
+test("native reads still pass the gate on an unsupported platform", () => {
+  const fixture = createFixture();
+  const base = { session_id: "unsupported-native" };
+  handleHook({ ...base, hook_event_name: "SessionStart" }, "compatible", { ...fixture, platform: "darwin" });
   assert.equal(
     handleHook(
       {
         ...base,
         hook_event_name: "PreToolUse",
         tool_name: "Read",
-        tool_use_id: "win32-pass",
+        tool_use_id: "unsupported-pass",
         tool_input: { file_path: controlTarget("pass") }
       },
       "compatible",
-      { ...fixture, platform: "win32" }
+      { ...fixture, platform: "darwin" }
     ).stdout,
     "",
-    "a native read of the control target is still allowed on win32"
+    "a native read of the control target is still allowed off Linux"
   );
 });
 

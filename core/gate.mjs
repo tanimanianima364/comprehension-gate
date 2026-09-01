@@ -156,10 +156,12 @@ export function handleHook(input, mode = "compatible", options = {}) {
     const toolKind = classifyTool(input?.tool_name, provider);
 
     /*
-     * Every shell rule this plugin has reads a command as POSIX shell, so on
-     * any other platform the scan applies the wrong grammar and the command
-     * table the wrong names: `Remove-Item` matches nothing and would look like
-     * inspection. Refuse every shell tool there instead.
+     * The shell rules are written for the one platform this plugin is tested
+     * on. Anywhere else the scan may apply the wrong grammar and the command
+     * table the wrong names -- a PowerShell `Remove-Item` matches nothing and
+     * would look like inspection -- so refuse every shell tool rather than
+     * guess. Only the shell closes: native reads still work, so the gate keeps
+     * functioning elsewhere with less available to it.
      *
      * This sits ahead of the control and inspection exceptions on purpose.
      * Those match a command exactly and return before the classifier is ever
@@ -168,10 +170,10 @@ export function handleHook(input, mode = "compatible", options = {}) {
      * reads working on every host, which is how Claude Code, Cursor, and Kiro
      * still pass here.
      */
-    if ((options.platform ?? process.platform) === "win32" && toolKind === "shell") {
+    if ((options.platform ?? process.platform) !== "linux" && toolKind === "shell") {
       return denyResult(
         mode,
-        "Comprehension Gate classifies shell commands as POSIX shell and this platform is not one, so no shell command is available. Use the host's native file-reading and search tools."
+        "Comprehension Gate supports shell commands on Linux only, so no shell command is available on this platform. Use the host's native file-reading and search tools."
       );
     }
 

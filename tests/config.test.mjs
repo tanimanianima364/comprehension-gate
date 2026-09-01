@@ -105,9 +105,7 @@ test("pinned entrypoint commands use an exact runtime path", () => {
   assert.equal(parsePinnedEntrypointCommand(command).argument, "pass");
 });
 
-test("adapter renderer safely executes roots with POSIX shell metacharacters", {
-  skip: process.platform === "win32"
-}, () => {
+test("adapter renderer safely executes roots with shell metacharacters", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-render-"));
   const sentinel = path.join(sandbox, "renderer-sentinel");
   const fixtureParent = path.join(sandbox, "node_modules");
