@@ -56,7 +56,11 @@ claude plugin marketplace add /absolute/path/to/comprehension-gate   # or: tanim
 claude plugin install comprehension-gate@comprehension-gate
 ```
 
-The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update comprehension-gate` followed by `claude plugin update comprehension-gate@comprehension-gate`. To load the working tree directly during development instead:
+The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update comprehension-gate` followed by `claude plugin update comprehension-gate@comprehension-gate`.
+
+`plugin update` compares the version in `.claude-plugin/plugin.json`, not the commit, so a release that does not raise it reports "already at the latest version" and the installed copy silently stays behind. Raise the version in `package.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` together in the same change, and `claude plugin tag` will check that the manifests and the marketplace entry agree before tagging the release.
+
+To load the working tree directly during development instead:
 
 ```bash
 claude --plugin-dir /absolute/path/to/comprehension-gate
