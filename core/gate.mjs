@@ -154,26 +154,32 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     const state = ensureGateState(provider, input, stateOptions);
     const toolKind = classifyTool(input?.tool_name, provider);
+    const gate = checkGate(provider, input, stateOptions);
 
     /*
      * The shell rules are written for the one platform this plugin is tested
      * on. Anywhere else the scan may apply the wrong grammar and the command
      * table the wrong names -- a PowerShell `Remove-Item` matches nothing and
-     * would look like inspection -- so refuse every shell tool rather than
-     * guess. Only the shell closes: native reads still work, so the gate keeps
-     * functioning elsewhere with less available to it.
+     * would look like inspection -- so while the gate is pending, refuse every
+     * shell tool rather than guess. Only the shell closes: native reads still
+     * work, so the gate still functions elsewhere with less available to it.
      *
-     * This sits ahead of the control and inspection exceptions on purpose.
-     * Those match a command exactly and return before the classifier is ever
-     * consulted, so a guard inside classifyShellCommand would not be reached
-     * by them. Keying on the tool kind rather than the provider leaves native
-     * reads working on every host, which is how Claude Code, Cursor, and Kiro
-     * still pass here.
+     * It applies only while pending. After pass this hook goes silent and the
+     * host's permission model is the authority, on every platform; carrying
+     * the refusal past that point would leave the shell permanently unusable
+     * rather than merely unjudged.
+     *
+     * Within the pending path it sits ahead of the control and inspection
+     * exceptions on purpose. Those match a command exactly and return before
+     * the classifier is ever consulted, so a guard inside classifyShellCommand
+     * would not be reached by them. Keying on the tool kind rather than the
+     * provider leaves native reads working on every host, which is how Claude
+     * Code, Cursor, and Kiro still pass here.
      */
-    if ((options.platform ?? process.platform) !== "linux" && toolKind === "shell") {
+    if (!gate.satisfied && (options.platform ?? process.platform) !== "linux" && toolKind === "shell") {
       return denyResult(
         mode,
-        "Comprehension Gate supports shell commands on Linux only, so no shell command is available on this platform. Use the host's native file-reading and search tools."
+        "Comprehension Gate judges shell commands as Linux shell commands and cannot judge them on this platform, so no shell command is available until the gate passes. Use the host's native file-reading and search tools."
       );
     }
 
@@ -195,7 +201,6 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
 
-    const gate = checkGate(provider, input, stateOptions);
     if (gate.satisfied) {
       return allowResult();
     }
