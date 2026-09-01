@@ -191,16 +191,27 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
       return allowResult();
     }
-    if (toolKind === "read" || toolKind === "harness") {
+    /*
+     * Allow by default. The gate denies a named set -- tools whose primary use
+     * is writing, and shell commands that classify as writing -- and lets
+     * everything else through.
+     *
+     * The asymmetry is why. A tool missing from the deny set means one change
+     * reaches the project without a comprehension check, with the user present
+     * and the instructions still telling the agent not to mutate. A tool
+     * wrongly denied costs capability in every session, silently, until
+     * somebody trips over it: an earlier allowlist denied ToolSearch and plan
+     * mode while the session instructions promised that gathering information
+     * and planning were allowed. The common mutation paths are named; the long
+     * tail is accepted, exactly as it already is for shell commands.
+     */
+    if (toolKind === "shell") {
+      if (classifyShellCommand(input?.tool_input?.command) === "read") {
+        return allowResult();
+      }
+    } else if (toolKind !== "write") {
       return allowResult();
     }
-    if (toolKind === "shell" && classifyShellCommand(input?.tool_input?.command) === "read") {
-      return allowResult();
-    }
-    if (toolKind === "network" && env.COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION === "1") {
-      return allowResult();
-    }
-
     if (gate.satisfied) {
       return allowResult();
     }
@@ -284,23 +295,26 @@ function normalizeEvent(event) {
 }
 
 function classifyTool(toolName, provider = null) {
-  // Exact, case-insensitive match only. Stripping characters would let names
-  // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
   const normalized = String(toolName ?? "").toLowerCase();
-  if (READ_ONLY_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
+  // Matched exactly: "Read2" or "@fs/read" must not stand in for "Read" when
+  // the question is whether this call may arm a control marker.
+  if (CONTROL_READ_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "read";
   }
-  if (WRITE_TOOLS.has(normalized)) {
+  /*
+   * The write list is the only thing standing between a pending gate and a
+   * mutation, so it matches wider. An MCP tool arrives namespaced --
+   * `mcp__filesystem__write_file`, `@filesystem/write_file`,
+   * `MCP:filesystem.write_file` -- and its last segment is the verb. Matching
+   * that too can only ever deny more, which is the safe direction for a
+   * denylist, the same reason shell command names drop their directory and
+   * executable extension before matching.
+   */
+  if (WRITE_TOOLS.has(normalized) || WRITE_TOOLS.has(lastNameSegment(normalized))) {
     return "write";
   }
   if (SHELL_TOOLS.has(normalized)) {
     return "shell";
-  }
-  if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
-    return "harness";
-  }
-  if (NETWORK_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
-    return "network";
   }
   return "other";
 }
@@ -510,11 +524,9 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
-    : toolKind === "network"
-      ? " Network tools can trigger side effects, so they are denied while the gate is pending unless COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 is set."
-      : toolKind === "other"
-        ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
-        : "";
+    : toolKind === "write"
+      ? " Writing is this tool's primary use, so it is denied while the gate is pending. Reading, searching, and other tools are available."
+      : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,
@@ -608,63 +620,61 @@ function normalizeHookWorkspace(value) {
   }
 }
 
+// A single underscore is part of a verb ("str_replace"); a doubled one is an
+// MCP namespace separator, as are "/", ".", and ":".
+const NAME_SEPARATOR = /__|[/.:]/;
+
+function lastNameSegment(normalized) {
+  const segments = normalized.split(NAME_SEPARATOR);
+  return segments[segments.length - 1];
+}
+
 const WRITE_TOOLS = new Set([
   "apply_patch",
   "delete",
   "delete_file",
   "edit",
+  "enterworktree",
+  "exitworktree",
   "fs_write",
   "fswrite",
   "notebookedit",
   "str_replace",
   "str_replace_based_edit_tool",
   "write",
-  "writefile"
+  "writefile",
+  // Verbs an MCP server commonly exposes; reached through lastNameSegment.
+  "create_directory",
+  "create_file",
+  "edit_file",
+  "move_file",
+  "patch_file",
+  "put_file",
+  "remove_file",
+  "write_file"
 ]);
 
 /*
- * Native read-only tools, keyed by provider: a name proves nothing across
- * hosts, and a Codex extension can present any plain tool name. Only verified
- * built-in names are listed. Codex has no name-based entry at all: it has
- * no native local reader on its hook path and inspects through the pinned
- * bridge commands instead.
+ * Tools that may arm a control marker, keyed by provider. This is no longer a
+ * permission list -- the default became allow, so a tool does not need to be
+ * here to run -- and it now has exactly one job: naming the native local file
+ * reads whose reading of a plugin-owned marker counts as pass or LOW bypass.
+ *
+ * Nothing else belongs here even if it is harmless to run. A network fetch is
+ * allowed while pending, but it must not be able to arm a control: given a
+ * `path` naming the marker and a response body containing it, it would satisfy
+ * the gate without ever reading the file. A name proves nothing across hosts
+ * either, so only verified built-ins are listed; Codex has no entry at all,
+ * because a built-in such as view_image can be disabled by feature flag and
+ * its name taken over by an extension, and it uses the pinned bridge instead.
  */
-const READ_ONLY_TOOLS_BY_PROVIDER = {
+const CONTROL_READ_TOOLS_BY_PROVIDER = {
   claude: new Set(["glob", "grep", "read"]),
   cursor: new Set(["grep", "read"]),
   kiro: new Set(["fs_read", "read"]),
-  // Intentionally empty: a Codex built-in such as view_image can be disabled
-  // by feature flag and its name taken over by an extension.
   codex: new Set()
 };
 
-/*
- * Host-side tools that cannot mutate the project, keyed by provider because a
- * name proves nothing across hosts (an extension tool may reuse any name).
- * Only verified canonical names are listed; other providers stay
- * deny-by-default until their names are confirmed. Tools that delegate
- * execution are deliberately absent: Skill runs `!command` preprocessing
- * before the model sees it, and Agent/Task can create a git worktree before
- * the subagent's first gated tool call.
- */
-const HARNESS_TOOLS_BY_PROVIDER = {
-  claude: new Set([
-    "askuserquestion",
-    "ls",
-    "taskcreate",
-    "taskget",
-    "tasklist",
-    "taskupdate",
-    "todowrite"
-  ])
-};
-
-// Denied while pending by default: an HTTP request can have side effects.
-// Keyed by provider for the same reason as the read-only list; the opt-in
-// only ever covers a host's own built-in network tools.
-const NETWORK_TOOLS_BY_PROVIDER = {
-  claude: new Set(["webfetch", "websearch"])
-};
 
 /*
  * Shell tools run their command through classifyShellCommand on every

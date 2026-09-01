@@ -56,26 +56,41 @@ function createFixture(extraEnv = {}) {
   return { env: { COMPREHENSION_GATE_STATE_DIR: directory, ...extraEnv } };
 }
 
-test("tool names that only collide with the read-only allowlist after stripping characters are denied while pending", () => {
-  for (const toolName of ["Read2", "read-2", "@fs/read", "ReadFile.v2", "@web/fetch", "@list/directory"]) {
-    const result = handleHook(
-      {
-        session_id: `collision-${toolName}`,
-        hook_event_name: "PreToolUse",
-        tool_name: toolName,
-        tool_input: { path: "src/app.js" }
-      },
-      "compatible",
-      createFixture()
-    );
+test("a near-miss on the write list is allowed, and a namespaced write verb is not", () => {
+  /*
+   * Under a deny list the failure direction inverts. A name that merely
+   * resembles a write tool is a different tool and is allowed -- part of the
+   * accepted long tail -- while a namespaced write verb is matched through its
+   * last segment, because denying more is the safe direction here.
+   */
+  for (const toolName of ["Read2", "read-2", "@fs/read", "ReadFile.v2", "@web/fetch", "Writer", "unwrite"]) {
+    const result = pendingTool(toolName);
+    assert.equal(result.stdout, "", `${toolName} is not a named write tool`);
+  }
+
+  for (const toolName of ["Write", "WRITE", "fs_write", "mcp__filesystem__write_file", "@filesystem/write_file", "MCP:filesystem.write_file"]) {
+    const result = pendingTool(toolName);
     const output = result.stdout ? JSON.parse(result.stdout) : null;
     assert.equal(
       output?.hookSpecificOutput?.permissionDecision,
       "deny",
-      `${toolName} must not be treated as a read-only tool`
+      `${toolName} must be denied while pending`
     );
   }
 });
+
+function pendingTool(toolName) {
+  return handleHook(
+    {
+      session_id: `collision-${toolName}`,
+      hook_event_name: "PreToolUse",
+      tool_name: toolName,
+      tool_input: { path: "src/app.js" }
+    },
+    "compatible",
+    createFixture()
+  );
+}
 
 test("canonical read-only tool names still pass through case-insensitively", () => {
   for (const toolName of ["Read", "Grep", "Glob"]) {

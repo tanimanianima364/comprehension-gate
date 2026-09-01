@@ -97,7 +97,12 @@ test("compatible flow blocks shell and writes until the native pass control comp
   assert.equal(JSON.parse(blockedAgain.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
 
-test("pending gates deny MCP tools across providers and restore them after pass", () => {
+/*
+ * These MCP names all end in a write verb, so the deny list reaches them
+ * through their last segment on every provider. An MCP tool that does not name
+ * a write is allowed while pending -- see tests/tool-policy.test.mjs.
+ */
+test("pending gates deny namespaced MCP write tools across providers and restore them after pass", () => {
   const cases = [
     {
       name: "compatible",
