@@ -13,6 +13,7 @@ import {
   resetGate
 } from "./state.mjs";
 import { buildPinnedEntrypointCommands } from "./command.mjs";
+import { classifyShellCommand } from "./shell.mjs";
 import {
   decodeInspectionArgument,
   encodeInspectionArgument,
@@ -167,6 +168,9 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return allowResult();
     }
     if (toolKind === "read" || toolKind === "harness") {
+      return allowResult();
+    }
+    if (toolKind === "shell" && classifyShellCommand(input?.tool_input?.command) === "read") {
       return allowResult();
     }
     if (toolKind === "network" && env.COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION === "1") {
@@ -483,7 +487,7 @@ function allowResult() {
 
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
-    ? " Shell commands are unavailable before the gate passes, except an exact provider-supplied control or Codex inspection command."
+    ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
     : toolKind === "network"
       ? " Network tools can trigger side effects, so they are denied while the gate is pending unless COMPREHENSION_GATE_ALLOW_NETWORK_INSPECTION=1 is set."
       : toolKind === "other"
@@ -666,6 +670,14 @@ const NETWORK_TOOLS_BY_PROVIDER = {
   claude: new Set(["webfetch", "websearch"])
 };
 
+/*
+ * Shell tools run their command through classifyShellCommand on every
+ * provider. Unlike the lists above, this is not keyed by provider: those trust
+ * a name to mean "read-only", whereas the classifier trusts nothing about the
+ * name and reads the command itself. A tool that carries no `command` string
+ * fails closed there, so an unfamiliar shell tool is denied rather than
+ * waved through.
+ */
 const SHELL_TOOLS = new Set([
   "bash",
   "control_bash_process",
