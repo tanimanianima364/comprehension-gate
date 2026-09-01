@@ -191,10 +191,25 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
       return allowResult();
     }
-    if (toolKind === "read" || toolKind === "harness") {
-      return allowResult();
-    }
-    if (toolKind === "shell" && classifyShellCommand(input?.tool_input?.command) === "read") {
+    /*
+     * Allow by default. The gate denies a named set -- tools whose primary use
+     * is writing, and shell commands that classify as writing -- and lets
+     * everything else through.
+     *
+     * The asymmetry is why. A tool missing from the deny set means one change
+     * reaches the project without a comprehension check, with the user present
+     * and the instructions still telling the agent not to mutate. A tool
+     * wrongly denied costs capability in every session, silently, until
+     * somebody trips over it: an earlier allowlist denied ToolSearch and plan
+     * mode while the session instructions promised that gathering information
+     * and planning were allowed. The common mutation paths are named; the long
+     * tail is accepted, exactly as it already is for shell commands.
+     */
+    if (toolKind === "shell") {
+      if (classifyShellCommand(input?.tool_input?.command) === "read") {
+        return allowResult();
+      }
+    } else if (toolKind !== "write") {
       return allowResult();
     }
     if (gate.satisfied) {
@@ -280,20 +295,26 @@ function normalizeEvent(event) {
 }
 
 function classifyTool(toolName, provider = null) {
-  // Exact, case-insensitive match only. Stripping characters would let names
-  // such as "Read2" or "@fs/read" collide with allowlisted read-only tools.
   const normalized = String(toolName ?? "").toLowerCase();
+  // The read list decides which native read may arm a control marker, so it
+  // matches exactly: "Read2" or "@fs/read" must not stand in for "Read".
   if (READ_ONLY_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
     return "read";
   }
-  if (WRITE_TOOLS.has(normalized)) {
+  /*
+   * The write list is the only thing standing between a pending gate and a
+   * mutation, so it matches wider. An MCP tool arrives namespaced --
+   * `mcp__filesystem__write_file`, `@filesystem/write_file`,
+   * `MCP:filesystem.write_file` -- and its last segment is the verb. Matching
+   * that too can only ever deny more, which is the safe direction for a
+   * denylist, the same reason shell command names drop their directory and
+   * executable extension before matching.
+   */
+  if (WRITE_TOOLS.has(normalized) || WRITE_TOOLS.has(lastNameSegment(normalized))) {
     return "write";
   }
   if (SHELL_TOOLS.has(normalized)) {
     return "shell";
-  }
-  if (HARNESS_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
-    return "harness";
   }
   return "other";
 }
@@ -503,9 +524,7 @@ function allowResult() {
 function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
   const toolNote = toolKind === "shell"
     ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
-    : toolKind === "other"
-      ? " This tool is not on the explicit read-only allowlist, so it is denied while the gate is pending."
-      : "";
+ : "";
   const controlInstruction = provider === "codex"
     ? [
         `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,
@@ -599,18 +618,38 @@ function normalizeHookWorkspace(value) {
   }
 }
 
+// A single underscore is part of a verb ("str_replace"); a doubled one is an
+// MCP namespace separator, as are "/", ".", and ":".
+const NAME_SEPARATOR = /__|[/.:]/;
+
+function lastNameSegment(normalized) {
+  const segments = normalized.split(NAME_SEPARATOR);
+  return segments[segments.length - 1];
+}
+
 const WRITE_TOOLS = new Set([
   "apply_patch",
   "delete",
   "delete_file",
   "edit",
+  "enterworktree",
+  "exitworktree",
   "fs_write",
   "fswrite",
   "notebookedit",
   "str_replace",
   "str_replace_based_edit_tool",
   "write",
-  "writefile"
+  "writefile",
+  // Verbs an MCP server commonly exposes; reached through lastNameSegment.
+  "create_directory",
+  "create_file",
+  "edit_file",
+  "move_file",
+  "patch_file",
+  "put_file",
+  "remove_file",
+  "write_file"
 ]);
 
 /*
@@ -637,26 +676,6 @@ const READ_ONLY_TOOLS_BY_PROVIDER = {
   codex: new Set()
 };
 
-/*
- * Host-side tools that cannot mutate the project, keyed by provider because a
- * name proves nothing across hosts (an extension tool may reuse any name).
- * Only verified canonical names are listed; other providers stay
- * deny-by-default until their names are confirmed. Tools that delegate
- * execution are deliberately absent: Skill runs `!command` preprocessing
- * before the model sees it, and Agent/Task can create a git worktree before
- * the subagent's first gated tool call.
- */
-const HARNESS_TOOLS_BY_PROVIDER = {
-  claude: new Set([
-    "askuserquestion",
-    "ls",
-    "taskcreate",
-    "taskget",
-    "tasklist",
-    "taskupdate",
-    "todowrite"
-  ])
-};
 
 /*
  * Shell tools run their command through classifyShellCommand on every
