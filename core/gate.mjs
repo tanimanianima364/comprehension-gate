@@ -206,7 +206,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
      * tail is accepted, exactly as it already is for shell commands.
      */
     if (toolKind === "shell") {
-      if (classifyShellCommand(input?.tool_input?.command) === "read") {
+      if (classifyShellCommand(input?.tool_input?.command, { cwd: input?.cwd }) === "read") {
         return allowResult();
       }
     } else if (toolKind !== "write") {

@@ -10,23 +10,32 @@
  * deliberately so that exploration before pass is not crippled.
  *
  * A command is scanned once, tracking POSIX quoting state, and split on
- * unquoted separators into segments. Every segment is classified on its own,
- * and the whole command counts as inspection only when all of them do. The
- * scan decides where one command ends and the next begins; it never tries to
- * understand the grammar built out of them, and every ambiguity resolves to a
- * refusal, so a misreading can only cost a false denial.
+ * unquoted separators into segments. Every segment is judged on its own as
+ * "read", "write", or "unknown", and the whole command takes the worst of
+ * them. The scan decides where one command ends and the next begins; it never
+ * tries to understand the grammar built out of them.
+ *
+ * "Unknown" is where the two entry points differ. A command typed by the agent
+ * resolves every ambiguity to a refusal, so a misreading can only cost a false
+ * denial. A script file run through `bash <path>` or `sh <path>` is scanned
+ * leniently: a known write inside it still refuses, but a construct the scan
+ * cannot judge -- a subshell, an expansion in the command-name position, a
+ * heredoc -- is let through, because a read-only helper script refused for its
+ * syntax would be lost to the agent in every session. Both directions serve
+ * the same purpose: the gate exists to keep the user able to explain the code
+ * the agent writes, not to sandbox the agent.
  *
  * Three constructs get more than lexical treatment, each for a stated reason:
  *
  * - Redirection is allowed only where it cannot name a file to write:
- *   /dev/null, and file-descriptor duplication. Any other target is refused.
+ *   /dev/null, and file-descriptor duplication. Any other target is a write.
  * - Parameter expansion (`$VAR`, `${VAR}`) is allowed, because POSIX does not
  *   re-parse the result of an expansion for control operators; an expanded
  *   value becomes argument text and cannot introduce a second command.
  * - Command substitution (`$(...)`, backticks) does run a command, so its body
  *   is classified recursively rather than refused.
  *
- * An expansion of either kind in the command-name position is refused: the
+ * An expansion of either kind in the command-name position is unknown: the
  * name is what the denylist matches on, so a hidden one cannot be judged.
  *
  * Every rule here reads the string as POSIX shell. The refusal for other
@@ -34,7 +43,12 @@
  * Codex control and inspection exceptions return before it would be called.
  */
 
-// Rejected outside quotes. These name no command that can be classified.
+import fs from "node:fs";
+import path from "node:path";
+
+// Undecomposable outside quotes when the agent types them. Inside a script,
+// `(` and `)` are read as segment boundaries so that what runs inside a
+// subshell or function body is still judged, and `<` is plain argument text.
 const UNQUOTED_REJECT = new Set(["<", "(", ")"]);
 
 const WRITE_COMMANDS = new Set([
@@ -46,10 +60,11 @@ const WRITE_COMMANDS = new Set([
   // Interactive or in-place editors
   "ed", "emacs", "nano", "vi", "vim",
   // Interpreters and wrappers: these run arbitrary code, so the visible
-  // command name says nothing about what gets written.
-  "bash", "bun", "cmd", "csh", "dash", "deno", "doas", "env", "eval", "exec",
+  // command name says nothing about what gets written. `bash` and `sh` are
+  // the exception, handled below by reading what they are given.
+  "bun", "cmd", "csh", "dash", "deno", "doas", "env", "eval", "exec",
   "fish", "ksh", "node", "nohup", "perl", "php", "powershell",
-  "pwsh", "python", "python2", "python3", "ruby", "script", "setsid", "sh",
+  "pwsh", "python", "python2", "python3", "ruby", "script", "setsid",
   "sudo", "timeout", "xargs", "zsh",
   // Wrappers that run their first operand as a command. They are refused
   // rather than unwrapped, matching how env, sudo, xargs, timeout, and nohup
@@ -66,12 +81,15 @@ const WRITE_COMMANDS = new Set([
   "hg", "svn"
 ]);
 
-// git subcommands that only report. `status` refreshes the index, but that is
-// git's own bookkeeping rather than a project mutation, and losing it would
-// remove the most common orientation command there is.
+// Shells whose script operand is read and judged instead of refused.
+const SCRIPT_SHELLS = new Set(["bash", "sh"]);
+
+// git subcommands that leave the working tree alone. `status` refreshes the
+// index and `fetch` and `branch` move refs, but that is git's own bookkeeping
+// rather than a change to a file the user would need to explain.
 const GIT_READ_SUBCOMMANDS = new Set([
-  "blame", "cat-file", "describe", "diff", "grep", "log", "ls-files",
-  "ls-tree", "rev-list", "rev-parse", "shortlog", "show", "status"
+  "blame", "branch", "cat-file", "describe", "diff", "fetch", "grep", "log",
+  "ls-files", "ls-tree", "rev-list", "rev-parse", "shortlog", "show", "status"
 ]);
 
 /*
@@ -114,31 +132,52 @@ const RESOLUTION_ASSIGNMENTS = new Set([
 const REDIRECT_TARGET = "/dev/null";
 const VARIABLE_NAME = /[A-Za-z_]/;
 
-export function classifyShellCommand(command) {
+/*
+ * `options.cwd` is the hook's absolute working directory, used to locate a
+ * script operand; without it no script can be judged. Only an agent-typed
+ * command enters here, so unknown resolves to write.
+ */
+export function classifyShellCommand(command, options = {}) {
+  return scan(command, { cwd: options.cwd, lenient: false, scripts: new Set() }) === "read"
+    ? "read"
+    : "write";
+}
+
+function scan(command, options) {
   if (typeof command !== "string") {
-    return "write";
+    return "unknown";
   }
-  const segments = splitSegments(command);
-  if (segments === null) {
-    return "write";
+  const split = splitSegments(command, options);
+  if (split.refusal) {
+    return split.refusal;
   }
   // An empty segment (a trailing `;`, say) runs nothing, so it is dropped
   // rather than judged; a command with nothing left to run is not inspection.
-  const commands = segments.filter(tokens => tokens.length > 0);
+  const commands = split.segments.filter(tokens => tokens.length > 0);
   if (commands.length === 0) {
+    return "unknown";
+  }
+  return worst(commands.map(tokens => judgeCommand(tokens, options)));
+}
+
+function worst(verdicts) {
+  if (verdicts.includes("write")) {
     return "write";
   }
-  return commands.every(isReadCommand) ? "read" : "write";
+  return verdicts.includes("unknown") ? "unknown" : "read";
 }
 
 /*
- * Returns one token list per segment, or null when the command contains
- * something this scanner refuses. Tokens are `{ value, expanded }`: the value
- * is unquoted, so a denylisted argument cannot hide behind quotes, and
- * `expanded` records that part of it came from an expansion whose result the
- * scanner cannot see.
+ * Returns `{ segments }`, one token list per segment, or `{ refusal }` naming
+ * why the scan stopped: "write" for a construct that names a write target, and
+ * "unknown" for one this scanner does not decompose. In lenient mode the
+ * unknown constructs are read past instead. Tokens are `{ value, expanded }`:
+ * the value is unquoted, so a denylisted argument cannot hide behind quotes,
+ * and `expanded` records that part of it came from an expansion whose result
+ * the scanner cannot see.
  */
-function splitSegments(command) {
+function splitSegments(command, options) {
+  const { lenient } = options;
   const segments = [];
   let tokens = [];
   let value = "";
@@ -181,17 +220,24 @@ function splitSegments(command) {
 
     if (character === "\\") {
       if (index + 1 >= command.length) {
-        return null;
+        if (!lenient) {
+          return { refusal: "unknown" };
+        }
+        index += 1;
+        continue;
       }
-      append(command[index + 1]);
+      // Backslash-newline is line continuation and adds nothing to the token.
+      if (command[index + 1] !== "\n") {
+        append(command[index + 1]);
+      }
       index += 2;
       continue;
     }
 
     if (character === "$" || character === "`") {
-      const expansion = readExpansion(command, index);
-      if (expansion === null) {
-        return null;
+      const expansion = readExpansion(command, index, options);
+      if (expansion.refusal) {
+        return expansion;
       }
       started = true;
       expanded = true;
@@ -215,6 +261,13 @@ function splitSegments(command) {
       index += 1;
       continue;
     }
+    // An unquoted `#` at the start of a word begins a comment.
+    if (character === "#" && !started) {
+      while (index < command.length && command[index] !== "\n") {
+        index += 1;
+      }
+      continue;
+    }
     if (character === ">" || (character === "&" && command[index + 1] === ">")) {
       // A bare file-descriptor number belongs to the redirection, not to the
       // argument list. Anything less clear stays a token, which can only make
@@ -225,7 +278,7 @@ function splitSegments(command) {
       }
       const redirect = readRedirect(command, index);
       if (redirect === null) {
-        return null;
+        return { refusal: "write" };
       }
       index = redirect.next;
       continue;
@@ -234,7 +287,12 @@ function splitSegments(command) {
       // `&&` separates; a lone `&` backgrounds, which detaches the command
       // from the decision this hook is making about it.
       if (command[index + 1] !== "&") {
-        return null;
+        if (!lenient) {
+          return { refusal: "unknown" };
+        }
+        endSegment();
+        index += 1;
+        continue;
       }
       endSegment();
       index += 2;
@@ -251,7 +309,16 @@ function splitSegments(command) {
       continue;
     }
     if (UNQUOTED_REJECT.has(character)) {
-      return null;
+      if (!lenient) {
+        return { refusal: "unknown" };
+      }
+      if (character === "<") {
+        append(character);
+      } else {
+        endSegment();
+      }
+      index += 1;
+      continue;
     }
     if (/\s/.test(character)) {
       endToken();
@@ -262,45 +329,52 @@ function splitSegments(command) {
     index += 1;
   }
 
-  if (quote !== null) {
-    return null;
+  if (quote !== null && !lenient) {
+    return { refusal: "unknown" };
   }
   endSegment();
-  return segments;
+  return { segments };
 }
 
 /*
- * Consumes one expansion starting at `start`. Command substitution bodies are
- * classified recursively; a body that is not inspection, or an expansion this
- * scanner does not model, refuses the whole command.
+ * Consumes one expansion starting at `start`, returning `{ next }` or
+ * `{ refusal }`. Command substitution bodies are classified recursively; a
+ * body that writes refuses in either mode, and one the scan cannot judge, or
+ * an expansion this scanner does not model, refuses only when strict.
  */
-function readExpansion(command, start) {
+function readExpansion(command, start, options) {
+  const { lenient } = options;
+  // An unterminated expansion is read past one character at a time when
+  // lenient, so the lines after it are still judged.
+  const unknown = () => (lenient ? { next: start + 1 } : { refusal: "unknown" });
+  const substitution = (body, next) => {
+    const verdict = scan(body, { ...options, scripts: new Set(options.scripts) });
+    if (verdict === "write") {
+      return { refusal: "write" };
+    }
+    return verdict === "unknown" && !lenient ? { refusal: "unknown" } : { next };
+  };
+
   if (command[start] === "`") {
     const end = command.indexOf("`", start + 1);
-    if (end === -1 || classifyShellCommand(command.slice(start + 1, end)) === "write") {
-      return null;
-    }
-    return { next: end + 1 };
+    return end === -1 ? unknown() : substitution(command.slice(start + 1, end), end + 1);
   }
 
   const next = command[start + 1];
   if (next === "(") {
     const end = findClosingParenthesis(command, start + 1);
-    if (end === -1 || classifyShellCommand(command.slice(start + 2, end)) === "write") {
-      return null;
-    }
-    return { next: end + 1 };
+    return end === -1 ? unknown() : substitution(command.slice(start + 2, end), end + 1);
   }
   if (next === "{") {
     const end = command.indexOf("}", start + 2);
     if (end === -1) {
-      return null;
+      return unknown();
     }
     // A substitution nested in a parameter expansion is not decomposed here,
     // so refuse rather than let its body through unclassified.
     const body = command.slice(start + 2, end);
-    if (body.includes("$") || body.includes("`")) {
-      return null;
+    if ((body.includes("$") || body.includes("`")) && !lenient) {
+      return { refusal: "unknown" };
     }
     return { next: end + 1 };
   }
@@ -312,8 +386,12 @@ function readExpansion(command, start) {
     return { next: end };
   }
   // Positional and special parameters are rare on a command line and are not
-  // modeled, so they refuse rather than expand into something unexamined.
-  return null;
+  // modeled, so they refuse rather than expand into something unexamined. In
+  // a script they are ordinary, and read as a one-character expansion.
+  if (lenient) {
+    return { next: next === undefined ? start + 1 : start + 2 };
+  }
+  return { refusal: "unknown" };
 }
 
 function findClosingParenthesis(command, open) {
@@ -381,7 +459,7 @@ function readRedirect(command, start) {
   return command.slice(targetStart, index) === REDIRECT_TARGET ? { next: index } : null;
 }
 
-function isReadCommand(tokens) {
+function judgeCommand(tokens, options) {
   /*
    * A segment may open with NAME=VALUE assignments, so the first token is not
    * necessarily the command. Step over them to reach the name the tables are
@@ -392,7 +470,7 @@ function isReadCommand(tokens) {
   let index = 0;
   while (index < tokens.length && isAssignment(tokens[index])) {
     if (RESOLUTION_ASSIGNMENTS.has(tokens[index].value.split("=", 1)[0])) {
-      return false;
+      return "write";
     }
     index += 1;
   }
@@ -400,28 +478,34 @@ function isReadCommand(tokens) {
   const command = tokens[index];
   // Assignments with no command after them execute nothing.
   if (command === undefined) {
-    return true;
+    return "read";
   }
   // The denylist matches on the command name, so a name the scanner could not
   // resolve cannot be judged at all.
   if (command.expanded) {
-    return false;
+    return "unknown";
   }
   const name = commandName(command.value);
   if (WRITE_COMMANDS.has(name)) {
-    return false;
+    return "write";
   }
   const rest = tokens.slice(index + 1);
   if (name === "git") {
-    return !rest[0]?.expanded && GIT_READ_SUBCOMMANDS.has(rest[0]?.value);
+    if (rest[0] === undefined || rest[0].expanded) {
+      return "unknown";
+    }
+    return GIT_READ_SUBCOMMANDS.has(rest[0].value) ? "read" : "write";
   }
   if (name === "sed") {
-    return hasOnlyAllowedFlags(rest, SED_READ_FLAGS);
+    return judgeFlags(rest, SED_READ_FLAGS);
   }
   if (name === "find") {
-    return hasOnlyAllowedFlags(rest, FIND_READ_PRIMARIES);
+    return judgeFlags(rest, FIND_READ_PRIMARIES);
   }
-  return true;
+  if (SCRIPT_SHELLS.has(name)) {
+    return judgeScript(rest, options);
+  }
+  return "read";
 }
 
 // An expanded token is never treated as an assignment: its text is not fully
@@ -431,18 +515,58 @@ function isAssignment(token) {
   return !token.expanded && ASSIGNMENT.test(token.value);
 }
 
-function hasOnlyAllowedFlags(rest, allowed) {
-  return rest.every(token => {
+function judgeFlags(rest, allowed) {
+  let verdict = "read";
+  for (const token of rest) {
     // An expanded argument could be any flag at all, so it can never be
     // confirmed to be one of the allowed ones.
     if (token.expanded) {
-      return false;
+      verdict = "unknown";
+    } else if (token.value.startsWith("-") && !NUMERIC_OPERAND.test(token.value)
+      && !allowed.has(token.value)) {
+      return "write";
     }
-    if (!token.value.startsWith("-") || NUMERIC_OPERAND.test(token.value)) {
-      return true;
-    }
-    return allowed.has(token.value);
-  });
+  }
+  return verdict;
+}
+
+/*
+ * `bash <path> [args]` is judged by reading the script leniently; `bash -c
+ * <string>` is judged by scanning the string. Any other shape -- no operand,
+ * another option, an expanded operand -- cannot be judged. A script that
+ * cannot be located or read, or that runs itself, refuses: those are failures
+ * of the lookup, not ambiguities in what the script does.
+ */
+function judgeScript(rest, options) {
+  const operand = rest[0];
+  if (operand === undefined || operand.expanded) {
+    return "unknown";
+  }
+  if (operand.value === "-c") {
+    const inline = rest[1];
+    return inline === undefined || inline.expanded
+      ? "unknown"
+      : scan(inline.value, { ...options, scripts: new Set(options.scripts) });
+  }
+  if (operand.value.startsWith("-")) {
+    return "unknown";
+  }
+  if (typeof options.cwd !== "string" || !path.isAbsolute(options.cwd)) {
+    return "write";
+  }
+  const resolved = path.resolve(options.cwd, operand.value);
+  if (options.scripts.has(resolved)) {
+    return "write";
+  }
+  let content;
+  try {
+    content = fs.readFileSync(resolved, "utf8");
+  } catch {
+    return "write";
+  }
+  const scripts = new Set(options.scripts);
+  scripts.add(resolved);
+  return scan(content, { ...options, lenient: true, scripts }) === "write" ? "write" : "read";
 }
 
 /*
