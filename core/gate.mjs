@@ -9,11 +9,14 @@ import {
   ensureGateState,
   GateStateError,
   checkGate,
+  markOutstanding,
   readGateState,
+  recordBaseline,
   resetGate
 } from "./state.mjs";
 import { buildPinnedEntrypointCommand } from "./command.mjs";
 import { classifyShellCommand } from "./shell.mjs";
+import { captureSnapshot, findRepository, snapshotDifference } from "./snapshot.mjs";
 import {
   decodeInspectionArgument,
   encodeInspectionArgument,
@@ -103,11 +106,12 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
   // Only trusted lifecycle events may record the workspace Codex inspection is pinned to.
-  const trustedReset = { workspace: normalizeHookWorkspace(input?.cwd) };
+  const trustedReset = { workspace: normalizeHookWorkspace(hookDirectory(input)) };
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
   const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
+  const isStopEvent = event === "stop" || event === "agentstop";
 
-  if (!isStartEvent && !isPromptEvent && event !== "posttooluse" && event !== "pretooluse") {
+  if (!isStartEvent && !isPromptEvent && !isStopEvent && event !== "posttooluse" && event !== "pretooluse") {
     return blockingErrorResult(
       `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}) and fails closed.`
     );
@@ -116,28 +120,26 @@ export function handleHook(input, mode = "compatible", options = {}) {
   try {
     if (isStartEvent) {
       const source = String(input?.source ?? "startup").toLowerCase();
-      if (source === "compact") {
-        const current = readGateState(provider, input, stateOptions);
-        if (!current.ok) {
-          resetGate(provider, input, stateOptions, trustedReset);
+      const current = readGateState(provider, input, stateOptions);
+      if (source !== "compact" || !current.ok) {
+        resetGate(provider, input, stateOptions, { ...trustedReset, baseline: null, outstanding: false, changes: [] });
+        const snapshot = snapshotOf(input, trustedReset.workspace);
+        if (snapshot) {
+          recordBaseline(provider, input, snapshot, stateOptions);
         }
-      } else {
-        resetGate(provider, input, stateOptions, trustedReset);
       }
-      return contextResult(
-        mode,
-        "SessionStart",
-        renderInstructions(provider, { ...commandOptions, cwd: input?.cwd })
-      );
+      return contextResult(mode, "SessionStart", renderInstructions(provider, { ...commandOptions, cwd: hookDirectory(input) }));
     }
 
     if (isPromptEvent) {
-      resetGate(provider, input, stateOptions, trustedReset);
-      return contextResult(
-        mode,
-        "UserPromptSubmit",
-        promptResetContext(provider, commandOptions, input?.cwd)
-      );
+      const state = resetGate(provider, input, stateOptions, trustedReset);
+      if (!state.outstanding) {
+        const snapshot = snapshotOf(input, state.workspace);
+        if (snapshot) {
+          recordBaseline(provider, input, snapshot, stateOptions);
+        }
+      }
+      return contextResult(mode, "UserPromptSubmit", promptContext(provider, state, commandOptions));
     }
 
     if (event === "posttooluse") {
@@ -145,11 +147,37 @@ export function handleHook(input, mode = "compatible", options = {}) {
       if (action) {
         if (controlTransitionSucceeded(input, provider, action)) {
           completeGateControl(provider, input, action, stateOptions);
+          const snapshot = snapshotOf(input, readGateState(provider, input, stateOptions).state?.workspace);
+          if (snapshot) {
+            recordBaseline(provider, input, snapshot, stateOptions);
+          }
         } else {
           clearGateControl(provider, input, action, stateOptions);
         }
       }
       return allowResult();
+    }
+
+    if (isStopEvent) {
+      const state = ensureGateState(provider, input, stateOptions);
+      const snapshot = snapshotOf(input, state.workspace);
+      if (!snapshot) {
+        return stopAllowResult(mode);
+      }
+      if (state.baseline === null) {
+        recordBaseline(provider, input, snapshot, stateOptions);
+        return stopAllowResult(mode);
+      }
+      const changes = snapshotDifference(state.baseline, snapshot);
+      if (changes.length === 0) {
+        return stopAllowResult(mode);
+      }
+      if (checkGate(provider, input, stateOptions).satisfied) {
+        recordBaseline(provider, input, snapshot, stateOptions);
+        return stopAllowResult(mode);
+      }
+      markOutstanding(provider, input, changes, stateOptions);
+      return stopHoldResult(mode, input, holdReason(changes, provider, commandOptions), userNotice(changes));
     }
 
     const state = ensureGateState(provider, input, stateOptions);
@@ -239,6 +267,9 @@ export function handleHook(input, mode = "compatible", options = {}) {
         "PostToolUse",
         `Comprehension Gate failed to record the control transition. ${detail} The gate remains pending; do not modify the project.`
       );
+    }
+    if (isStopEvent) {
+      return stopErrorResult(mode, `Comprehension Gate could not check the project for changes. ${detail}`);
     }
     return denyResult(mode, `Comprehension Gate failed closed. ${detail}`);
   }
@@ -547,12 +578,82 @@ function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd)
   return lines.join(" ").trim();
 }
 
-function promptResetContext(provider, commandOptions = {}, cwd) {
-  const nativeReadContext = `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
-  if (provider !== "codex") {
-    return nativeReadContext;
+function snapshotOf(input, workspace) {
+  const repository = findRepository(hookDirectory(input) ?? workspace ?? "");
+  return repository ? captureSnapshot(repository) : null;
+}
+
+function stopAllowResult(mode) {
+  return mode === "cursor" ? { exitCode: 0, stdout: "{}\n", stderr: "" } : allowResult();
+}
+
+/*
+ * Only Claude Code can hold the turn. It is held once: the agent's question
+ * ends the turn, and that second Stop carries stop_hook_active, which must be
+ * allowed or the agent could never ask. Cursor cannot hold but can submit a
+ * follow-up, once per turn and never after an abort. Kiro can only warn.
+ */
+function stopHoldResult(mode, input, reason, notice) {
+  if (mode === "kiro") {
+    return { exitCode: 1, stdout: "", stderr: `${reason}\n` };
   }
-  return `Comprehension Gate is pending for this user turn. If this message answers a gate question, assess it against the required level and run this exact Codex pass command only after the answer demonstrates understanding: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low", commandOptions)} ${formatCodexInspectionInstructions(cwd, commandOptions)}`;
+  if (mode === "cursor") {
+    const loops = Number(input?.loop_count ?? 0);
+    const hold = input?.status === "completed" && loops === 0;
+    return { exitCode: 0, stdout: `${JSON.stringify(hold ? { followup_message: reason } : {})}\n`, stderr: "" };
+  }
+  if (input?.stop_hook_active === true) {
+    return { exitCode: 0, stdout: `${JSON.stringify({ systemMessage: notice })}\n`, stderr: "" };
+  }
+  return {
+    exitCode: 0,
+    stdout: `${JSON.stringify({ decision: "block", reason, systemMessage: notice })}\n`,
+    stderr: ""
+  };
+}
+
+// A failing check must not hold a turn forever, so it reports and allows.
+function stopErrorResult(mode, message) {
+  if (mode === "kiro") {
+    return { exitCode: 1, stdout: "", stderr: `${message}\n` };
+  }
+  if (mode === "cursor") {
+    return { exitCode: 0, stdout: "{}\n", stderr: `${message}\n` };
+  }
+  return { exitCode: 0, stdout: `${JSON.stringify({ systemMessage: message })}\n`, stderr: "" };
+}
+
+function holdReason(changes, provider, commandOptions = {}) {
+  const controls = provider === "codex"
+    ? `run this exact pass command: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact LOW bypass command: ${controlCommand("bypass-low", commandOptions)}`
+    : `read this exact pass control target with a native file-reading tool: ${controlTarget("pass")} For a genuinely LOW change only, read this exact LOW bypass target: ${controlTarget("bypass-low")}`;
+  return [
+    "Comprehension Gate: the project changed during this turn and the change has not been explained.",
+    `Changed: ${listChanges(changes)}.`,
+    "Before finishing, classify the change (LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer) and ask the user to explain it at the required level in their own words.",
+    `After the user demonstrates understanding, ${controls}`,
+    "Do not revert or relocate the change to avoid the question."
+  ].join(" ");
+}
+
+function userNotice(changes) {
+  return `Comprehension Gate: an unexplained change remains in the project (${listChanges(changes)}). The agent should ask you to explain it before continuing.`;
+}
+
+function listChanges(changes) {
+  const shown = changes.slice(0, 10);
+  const more = changes.length - shown.length;
+  return shown.join(", ") + (more > 0 ? `, and ${more} more` : "");
+}
+
+function promptContext(provider, state, commandOptions = {}) {
+  const controls = provider === "codex"
+    ? `run this exact pass command only after the answer demonstrates understanding: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low", commandOptions)}`
+    : `read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
+  if (state.outstanding) {
+    return `Comprehension Gate: an unexplained change from an earlier turn is outstanding (${listChanges(state.changes)}). If this message explains it, assess the explanation against the required level and ${controls} Otherwise, ask for the explanation before doing anything else.`;
+  }
+  return `Comprehension Gate applies to this turn. If this message answers a gate question, assess it and ${controls} If the project changes during this turn, ask the user to explain the change before finishing.`;
 }
 
 function controlCommandOptions(options = {}) {
@@ -602,6 +703,15 @@ function isSameOrDescendant(root, candidate) {
     return true;
   }
   return !path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..";
+}
+
+// Claude Code, Codex, and Kiro send cwd; Cursor sends workspace_roots.
+export function hookDirectory(input) {
+  if (typeof input?.cwd === "string" && input.cwd !== "") {
+    return input.cwd;
+  }
+  const roots = input?.workspace_roots;
+  return Array.isArray(roots) && typeof roots[0] === "string" ? roots[0] : null;
 }
 
 function normalizeHookWorkspace(value) {
