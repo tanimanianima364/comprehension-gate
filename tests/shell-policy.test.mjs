@@ -540,6 +540,9 @@ test("a script run with bash or sh is judged by its contents", () => {
   write("self.sh", "bash self.sh\n");
   // An unterminated expansion must not swallow the write that follows it.
   write("unterminated.sh", "echo $(pwd\nrm -rf src\n");
+  // A script that runs itself through a symlink is still running itself.
+  write("via-link.sh", "bash link.sh\n");
+  fs.symlinkSync(path.join(cwd, "via-link.sh"), path.join(cwd, "link.sh"));
 
   for (const command of ["bash read.sh", "sh read.sh", "bash ./read.sh 50", "bash nested.sh"]) {
     assert.equal(classifyShellCommand(command, { cwd }), "read", command);
@@ -552,6 +555,7 @@ test("a script run with bash or sh is judged by its contents", () => {
     "bash git-write.sh",
     "bash self.sh",
     "bash unterminated.sh",
+    "bash via-link.sh",
     "bash missing.sh",
     "bash -x read.sh",
     "bash $SCRIPT",

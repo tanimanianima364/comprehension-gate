@@ -20,7 +20,7 @@
  * denial. A script file run through `bash <path>` or `sh <path>` is scanned
  * leniently: a known write inside it still refuses, but a construct the scan
  * cannot judge -- a subshell, an expansion in the command-name position, a
- * heredoc -- is let through, because a read-only helper script refused for its
+ * positional parameter -- is let through, because a read-only helper script refused for its
  * syntax would be lost to the agent in every session. Both directions serve
  * the same purpose: the gate exists to keep the user able to explain the code
  * the agent writes, not to sandbox the agent.
@@ -554,12 +554,15 @@ function judgeScript(rest, options) {
   if (typeof options.cwd !== "string" || !path.isAbsolute(options.cwd)) {
     return "write";
   }
-  const resolved = path.resolve(options.cwd, operand.value);
-  if (options.scripts.has(resolved)) {
-    return "write";
-  }
+  // The canonical path is what recursion is tracked on, so a script cannot
+  // re-enter itself through a symlink under another name.
+  let resolved;
   let content;
   try {
+    resolved = fs.realpathSync(path.resolve(options.cwd, operand.value));
+    if (options.scripts.has(resolved)) {
+      return "write";
+    }
     content = fs.readFileSync(resolved, "utf8");
   } catch {
     return "write";
