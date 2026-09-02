@@ -108,6 +108,9 @@ test("an outstanding change survives a new prompt until it is explained", () => 
   const third = { ...base, prompt_id: "p3" };
   handleHook({ ...third, hook_event_name: "UserPromptSubmit", prompt: "it adds src.js because..." }, "compatible", fixture);
   pass(third, fixture);
+  const afterPass = readGateState("claude", third, fixture).state;
+  assert.equal(afterPass.outstanding, false);
+  assert.equal(typeof afterPass.baseline.worktrees[repository].entries["src.js"], "string");
   assert.equal(stop("compatible", third, fixture).stdout, "");
   assert.equal(readGateState("claude", third, fixture).state.outstanding, false);
 });
@@ -130,6 +133,18 @@ test("a commit with a clean tree is a change", () => {
   assert.equal(JSON.parse(stop("compatible", base, fixture).stdout).decision, "block");
 });
 
+test("a Stop payload without a turn id still holds", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+
+  const withoutTurnId = { session_id: base.session_id, cwd: base.cwd, hook_event_name: "Stop" };
+  const held = handleHook(withoutTurnId, "compatible", fixture);
+  const output = JSON.parse(held.stdout);
+  assert.equal(output.decision, "block");
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, true);
+});
+
 test("a session outside a repository never holds", () => {
   const plain = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-plain-"));
   const { fixture, base } = session("compatible", plain);
@@ -145,6 +160,27 @@ test("a state without a baseline adopts the current snapshot instead of holding"
   // First event of the session is Stop: nothing to compare with.
   assert.equal(stop("compatible", base, fixture).stdout, "");
   assert.notEqual(readGateState("claude", base, fixture).state.baseline, null);
+});
+
+test("a corrupt git index does not fail closed at SessionStart, UserPromptSubmit, or Stop", () => {
+  const repository = createRepository();
+  // Corrupting the index makes `git status` throw while `rev-parse` still
+  // succeeds, so `findRepository` finds the repository but `captureSnapshot`
+  // fails inside `entriesOf`.
+  fs.writeFileSync(path.join(repository, ".git", "index"), "garbage");
+  const fixture = createFixture();
+  const base = { session_id: "corrupt-session", prompt_id: "p1", cwd: repository };
+
+  const start = handleHook({ ...base, hook_event_name: "SessionStart", source: "startup" }, "compatible", fixture);
+  assert.equal(start.exitCode, 0);
+
+  const prompt = handleHook({ ...base, hook_event_name: "UserPromptSubmit", prompt: "hi" }, "compatible", fixture);
+  assert.equal(prompt.exitCode, 0);
+  assert.equal(JSON.parse(prompt.stdout).hookSpecificOutput.hookEventName, "UserPromptSubmit");
+
+  const stopResult = stop("compatible", base, fixture);
+  assert.equal(stopResult.exitCode, 0);
+  assert.equal(stopResult.stdout, "");
 });
 
 test("Cursor gets a follow-up message once and nothing on an aborted turn", () => {

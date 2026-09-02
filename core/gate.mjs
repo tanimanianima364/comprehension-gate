@@ -160,23 +160,30 @@ export function handleHook(input, mode = "compatible", options = {}) {
 
     if (isStopEvent) {
       const state = ensureGateState(provider, input, stateOptions);
+      // A Stop payload without a turn id must still be matched to the state
+      // it belongs to, or every state call below throws "different turn" and
+      // the gate silently allows instead of holding.
+      const hasTurnId = typeof input?.turn_id === "string" && input.turn_id !== ""
+        || typeof input?.generation_id === "string" && input.generation_id !== ""
+        || typeof input?.prompt_id === "string" && input.prompt_id !== "";
+      const turnInput = !hasTurnId && state.turnId !== null ? { ...input, prompt_id: state.turnId } : input;
       const snapshot = snapshotOf(input, state.workspace);
       if (!snapshot) {
         return stopAllowResult(mode);
       }
       if (state.baseline === null) {
-        recordBaseline(provider, input, snapshot, stateOptions);
+        recordBaseline(provider, turnInput, snapshot, stateOptions);
         return stopAllowResult(mode);
       }
       const changes = snapshotDifference(state.baseline, snapshot);
       if (changes.length === 0) {
         return stopAllowResult(mode);
       }
-      if (checkGate(provider, input, stateOptions).satisfied) {
-        recordBaseline(provider, input, snapshot, stateOptions);
+      if (checkGate(provider, turnInput, stateOptions).satisfied) {
+        recordBaseline(provider, turnInput, snapshot, stateOptions);
         return stopAllowResult(mode);
       }
-      markOutstanding(provider, input, changes, stateOptions);
+      markOutstanding(provider, turnInput, changes, stateOptions);
       return stopHoldResult(mode, input, holdReason(changes, provider, commandOptions), userNotice(changes));
     }
 
@@ -578,9 +585,16 @@ function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd)
   return lines.join(" ").trim();
 }
 
+// A snapshot that cannot be taken (corrupt index, git timeout, missing
+// binary) is treated as "not a repository" for this event, so a git failure
+// never fails closed at SessionStart, UserPromptSubmit, or Stop.
 function snapshotOf(input, workspace) {
-  const repository = findRepository(hookDirectory(input) ?? workspace ?? "");
-  return repository ? captureSnapshot(repository) : null;
+  try {
+    const repository = findRepository(hookDirectory(input) ?? workspace ?? "");
+    return repository ? captureSnapshot(repository) : null;
+  } catch {
+    return null;
+  }
 }
 
 function stopAllowResult(mode) {
