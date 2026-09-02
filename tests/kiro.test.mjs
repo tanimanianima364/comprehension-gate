@@ -10,7 +10,7 @@ import {
 } from "../core/gate.mjs";
 import { adapterCommand } from "../core/command.mjs";
 import { readGateState } from "../core/state.mjs";
-import { createFixture, controlInput, assertDenied } from "./helpers.mjs";
+import { createFixture, controlInput } from "./helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -32,7 +32,8 @@ test("Kiro keeps agentSpawn payload compatibility", () => {
     "kiro",
     fixture
   );
-  assertDenied(write, "kiro", "legacy agentSpawn");
+  assert.equal(write.exitCode, 0, "legacy agentSpawn");
+  assert.equal(write.stdout, "", "legacy agentSpawn");
 });
 
 test("Kiro requires success true and the expected marker", () => {
@@ -64,14 +65,13 @@ test("Kiro requires success true and the expected marker", () => {
     "kiro",
     fixture
   );
-  assert.equal(
-    handleHook(
-      { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
-      "kiro",
-      fixture
-    ).exitCode,
-    2
+  const afterFailedControl = handleHook(
+    { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
+    "kiro",
+    fixture
   );
+  assert.equal(afterFailedControl.exitCode, 0);
+  assert.equal(readGateState("kiro", base, { env: fixture.env }).state.status, "pending", "success:false must not complete the control");
 
   handleHook(
     {
@@ -105,6 +105,7 @@ test("Kiro requires success true and the expected marker", () => {
     ).exitCode,
     0
   );
+  assert.equal(readGateState("kiro", base, { env: fixture.env }).state.status, "passed", "success:true must complete the control");
 });
 
 test("Kiro control reads require exactly one operations path on Pre and Post", () => {
@@ -162,14 +163,17 @@ test("Kiro control reads require exactly one operations path on Pre and Post", (
       "kiro",
       fixture
     );
-    assertDenied(
-      handleHook(
-        { ...base, hook_event_name: "preToolUse", tool_name: "write", tool_input: {} },
-        "kiro",
-        fixture
-      ),
+    const write = handleHook(
+      { ...base, hook_event_name: "preToolUse", tool_name: "write", tool_input: {} },
       "kiro",
-      name
+      fixture
+    );
+    assert.equal(write.exitCode, 0, name);
+    assert.equal(write.stdout, "", name);
+    assert.equal(
+      readGateState("kiro", base, { env: fixture.env }).state.status,
+      "pending",
+      `${name}: did not arm a control`
     );
   }
 
@@ -255,7 +259,8 @@ test("a Kiro 2.x session is identified by KIRO_SESSION_ID when the payload omits
     "kiro",
     { env }
   );
-  assert.equal(write.exitCode, 2, "the gate is pending for that session");
+  assert.equal(write.exitCode, 0);
+  assert.equal(write.stdout, "");
 
   const state = readGateState("kiro", { session_id: "kiro-2x-session" }, { env });
   assert.equal(state.ok, true, "state is keyed by the environment session id");

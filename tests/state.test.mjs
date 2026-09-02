@@ -8,7 +8,9 @@ import {
   GateStateError,
   checkGate,
   completeGateControl,
+  markOutstanding,
   readGateState,
+  recordBaseline,
   resetGate
 } from "../core/state.mjs";
 
@@ -130,4 +132,37 @@ test("an armed control from an earlier request cannot complete after a reset", (
 
   assert.throws(() => completeGateControl("claude", turn, "pass", fixture), GateStateError);
   assert.equal(checkGate("claude", turn, fixture).satisfied, false);
+});
+
+test("a reset keeps the baseline and the outstanding change; controls replace them", () => {
+  const fixture = createFixture();
+  const base = { session_id: "baseline-session", prompt_id: "p1" };
+  resetGate("claude", base, fixture);
+  const snapshot = { worktrees: { "/repo": { head: "abc", entries: {} } } };
+  recordBaseline("claude", base, snapshot, fixture);
+  markOutstanding("claude", base, ["/repo/src/app.js"], fixture);
+
+  const next = resetGate("claude", { ...base, prompt_id: "p2" }, fixture);
+  assert.deepEqual(next.baseline, snapshot);
+  assert.equal(next.outstanding, true);
+  assert.deepEqual(next.changes, ["/repo/src/app.js"]);
+  assert.equal(next.status, "pending");
+
+  const later = { worktrees: { "/repo": { head: "def", entries: {} } } };
+  const recorded = recordBaseline("claude", { ...base, prompt_id: "p2" }, later, fixture);
+  assert.deepEqual(recorded.baseline, later);
+  assert.equal(recorded.outstanding, false);
+  assert.deepEqual(recorded.changes, []);
+
+  const overridden = resetGate("claude", { ...base, prompt_id: "p3" }, fixture, { baseline: null });
+  assert.equal(overridden.baseline, null);
+});
+
+test("outstanding changes are capped so the state file stays small", () => {
+  const fixture = createFixture();
+  const base = { session_id: "cap-session", prompt_id: "p1" };
+  resetGate("claude", base, fixture);
+  const many = Array.from({ length: 80 }, (_, index) => `/repo/file-${index}`);
+  const state = markOutstanding("claude", base, many, fixture);
+  assert.equal(state.changes.length, 50);
 });

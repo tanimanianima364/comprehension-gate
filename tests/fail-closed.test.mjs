@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { controlTarget, handleHook } from "../core/gate.mjs";
+import { checkGate, readGateState } from "../core/state.mjs";
 
 test("a missing hook_event_name is rejected instead of allowing the tool", () => {
   for (const mode of ["compatible", "cursor", "kiro"]) {
@@ -16,7 +17,7 @@ test("a missing hook_event_name is rejected instead of allowing the tool", () =>
       mode,
       createFixture()
     );
-    assert.equal(result.exitCode, 2, `${mode}: unknown event must exit non-zero`);
+    assert.equal(result.exitCode, 1, `${mode}: unknown event must exit non-zero`);
     assert.equal(result.stdout, "", `${mode}: unknown event must not emit an allow`);
     assert.match(result.stderr, /unrecognized hook event/i, mode);
   }
@@ -28,7 +29,7 @@ test("an unrecognized hook_event_name is rejected", () => {
     "compatible",
     createFixture()
   );
-  assert.equal(result.exitCode, 2);
+  assert.equal(result.exitCode, 1);
   assert.equal(result.stdout, "");
 });
 
@@ -56,55 +57,42 @@ function createFixture(extraEnv = {}) {
   return { env: { COMPREHENSION_GATE_STATE_DIR: directory, ...extraEnv } };
 }
 
-test("a near-miss on the write list is allowed, and a namespaced write verb is not", () => {
-  /*
-   * Under a deny list the failure direction inverts. A name that merely
-   * resembles a write tool is a different tool and is allowed -- part of the
-   * accepted long tail -- while a namespaced write verb is matched through its
-   * last segment, because denying more is the safe direction here.
-   */
-  for (const toolName of ["Read2", "read-2", "@fs/read", "ReadFile.v2", "@web/fetch", "Writer", "unwrite"]) {
-    const result = pendingTool(toolName);
-    assert.equal(result.stdout, "", `${toolName} is not a named write tool`);
-  }
-
-  for (const toolName of ["Write", "WRITE", "fs_write", "mcp__filesystem__write_file", "@filesystem/write_file", "MCP:filesystem.write_file"]) {
-    const result = pendingTool(toolName);
-    const output = result.stdout ? JSON.parse(result.stdout) : null;
-    assert.equal(
-      output?.hookSpecificOutput?.permissionDecision,
-      "deny",
-      `${toolName} must be denied while pending`
-    );
-  }
-});
-
-function pendingTool(toolName) {
-  return handleHook(
-    {
-      session_id: `collision-${toolName}`,
-      hook_event_name: "PreToolUse",
-      tool_name: toolName,
-      tool_input: { path: "src/app.js" }
-    },
-    "compatible",
-    createFixture()
-  );
+function armedControls(directory) {
+  return fs.readdirSync(directory).filter(name => name.includes(".armed."));
 }
 
-test("canonical read-only tool names still pass through case-insensitively", () => {
-  for (const toolName of ["Read", "Grep", "Glob"]) {
-    const result = handleHook(
+test("canonical read-only tool names arm a control case-insensitively, and only for a control target", () => {
+  for (const toolName of ["read", "GREP", "Glob"]) {
+    const fixture = createFixture();
+    const directory = fixture.env.COMPREHENSION_GATE_STATE_DIR;
+    const base = { session_id: `canonical-${toolName}` };
+    handleHook({ ...base, hook_event_name: "SessionStart", source: "startup" }, "compatible", fixture);
+
+    handleHook(
       {
-        session_id: `canonical-${toolName}`,
+        ...base,
         hook_event_name: "PreToolUse",
         tool_name: toolName,
-        tool_input: { path: "src/app.js" }
+        tool_use_id: "ordinary",
+        tool_input: { path: "README.md" }
       },
       "compatible",
-      createFixture()
+      fixture
     );
-    assert.equal(result.stdout, "", `${toolName} should be allowed while pending`);
+    assert.deepEqual(armedControls(directory), [], `${toolName}: an ordinary read arms nothing`);
+
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_use_id: "control",
+        tool_input: { path: controlTarget("pass") }
+      },
+      "compatible",
+      fixture
+    );
+    assert.equal(armedControls(directory).length, 1, `${toolName}: a control read arms the control`);
   }
 });
 
@@ -147,12 +135,18 @@ test("a pending state seeded without a turn id adopts the first turn id it sees"
   );
   assert.equal(write.stdout, "", "pass must satisfy the adopted turn");
 
+  const otherSession = { ...session, generation_id: "generation-2" };
   const otherTurn = handleHook(
-    { ...session, generation_id: "generation-2", hook_event_name: "preToolUse", tool_name: "Write", tool_input: {} },
+    { ...otherSession, hook_event_name: "preToolUse", tool_name: "Write", tool_input: {} },
     "cursor",
     fixture
   );
-  assert.equal(JSON.parse(otherTurn.stdout).permission, "deny", "a later turn must not inherit the pass");
+  assert.equal(otherTurn.stdout, "");
+  assert.equal(
+    readGateState("cursor", otherSession, { env: fixture.env }).state.status,
+    "pending",
+    "a later turn must not inherit the pass"
+  );
 });
 
 test("a passed state without a turn id does not adopt a new turn id", () => {
@@ -177,30 +171,19 @@ test("a passed state without a turn id does not adopt a new turn id", () => {
     fixture
   );
 
+  const laterSession = { ...session, turn_id: "turn-later" };
   const write = handleHook(
-    { ...session, turn_id: "turn-later", hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    { ...laterSession, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(write.stdout).hookSpecificOutput.permissionDecision, "deny");
-});
-
-function writeTranscript(prompts) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-tx-"));
-  const file = path.join(directory, "transcript.jsonl");
-  fs.writeFileSync(file, "");
-  for (const prompt of prompts) {
-    appendHumanPrompt(file, prompt);
-  }
-  return file;
-}
-
-function appendHumanPrompt(file, prompt) {
-  fs.appendFileSync(
-    file,
-    `${JSON.stringify({ type: "user", origin: { kind: "human" }, message: { role: "user", content: prompt } })}\n`
+  assert.equal(write.stdout, "");
+  assert.equal(
+    checkGate("claude", laterSession, { env: fixture.env }).satisfied,
+    false,
+    "a passed state without a turn id does not adopt a new turn id"
   );
-}
+});
 
 function passGate(session, fixture) {
   handleHook(
@@ -221,114 +204,6 @@ function passGate(session, fixture) {
     fixture
   );
 }
-
-test("a new human prompt in the transcript invalidates a pass when the prompt reset hook was skipped", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "stale-prompt", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "", "same turn stays passed");
-
-  appendHumanPrompt(transcript, "second request");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(
-    JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision,
-    "deny",
-    "the previous turn's pass must not cover a new prompt"
-  );
-
-  passGate(session, fixture);
-  const recovered = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(recovered.stdout, "", "the new turn can still pass through the control read");
-});
-
-test("a prompt whose transcript representation differs from the hook payload can still pass", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["<command-name>/foo</command-name>"]);
-  const session = { session_id: "prompt-shape", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "/foo" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "");
-});
-
-test("the transcript check is skipped when no transcript or turn id is available", () => {
-  const fixture = createFixture();
-  const session = { session_id: "no-transcript" };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "");
-});
-
-test("resubmitting the same prompt text starts a new turn that does not inherit the pass", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["続けて"]);
-  const session = { session_id: "same-text", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "続けて" }, "compatible", fixture);
-  passGate(session, fixture);
-  assert.equal(
-    handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture).stdout,
-    ""
-  );
-
-  appendHumanPrompt(transcript, "続けて");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
-});
-
-test("a satisfied gate whose transcript can no longer be judged returns to pending but can pass again", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "unjudgeable", transcript_path: transcript };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "not json\n");
-  const denied = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
-
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "", "with no judgeable transcript the re-pass must stick");
-});
 
 test("a second concurrent control completion is an idempotent no-op after the first passes", () => {
   const fixture = createFixture();
@@ -410,7 +285,8 @@ test("Claude Code prompt_id is the turn identity: a new prompt_id without a prom
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(stale.stdout, "");
+  assert.equal(readGateState("claude", turnB, { env: fixture.env }).state.status, "pending");
 
   passGate(turnB, fixture);
   assert.equal(
@@ -423,28 +299,12 @@ test("Claude Code prompt_id is the turn identity: a new prompt_id without a prom
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(oldTurn.stdout).hookSpecificOutput.permissionDecision, "deny", "turn A cannot reuse turn B's pass");
-});
-
-test("a pass recorded while the transcript was unjudgeable is invalidated once a newer record becomes visible", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "recovered-transcript", transcript_path: transcript };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "not json\n");
-  handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "");
-  appendHumanPrompt(transcript, "second request");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
+  assert.equal(oldTurn.stdout, "");
+  assert.equal(
+    checkGate("claude", turnA, { env: fixture.env }).satisfied,
+    false,
+    "turn A cannot reuse turn B's pass"
   );
-  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
 
 test("hook_event_name must match a known event exactly", () => {
@@ -459,7 +319,7 @@ test("hook_event_name must match a known event exactly", () => {
       "compatible",
       fixture
     );
-    assert.equal(result.exitCode, 2, `${event} must be rejected as unrecognized`);
+    assert.equal(result.exitCode, 1, `${event} must be rejected as unrecognized`);
     assert.equal(result.stdout, "", event);
   }
   assert.equal(

@@ -4,26 +4,33 @@
     "sessionStart": [
       {
         "command": "__COMPREHENSION_GATE_COMMAND__",
-        "timeout": 5
+        "timeout": 20
       }
     ],
     "beforeSubmitPrompt": [
       {
         "command": "__COMPREHENSION_GATE_COMMAND__",
-        "timeout": 5
+        "timeout": 20
       }
     ],
     "preToolUse": [
       {
         "command": "__COMPREHENSION_GATE_COMMAND__",
-        "timeout": 5,
+        "timeout": 20,
         "failClosed": true
       }
     ],
     "postToolUse": [
       {
         "command": "__COMPREHENSION_GATE_COMMAND__",
-        "timeout": 5
+        "timeout": 20
+      }
+    ],
+    "stop": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 20,
+        "loop_limit": 1
       }
     ]
   }
