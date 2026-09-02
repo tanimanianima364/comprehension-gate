@@ -26,8 +26,7 @@ export function buildEntrypointCommand(entrypoint, argument) {
 export function buildPinnedEntrypointCommand(
   entrypoint,
   argument,
-  runtime = process.execPath,
-  extraArguments = []
+  runtime = process.execPath
 ) {
   if (typeof runtime !== "string" || runtime.length === 0) {
     throw new Error("Runtime must be a non-empty path.");
@@ -41,14 +40,9 @@ export function buildPinnedEntrypointCommand(
   if (typeof argument !== "string" || !SAFE_ARGUMENT.test(argument)) {
     throw new Error("Command argument contains shell syntax.");
   }
-  if (!Array.isArray(extraArguments) || extraArguments.some(value =>
-    typeof value !== "string" || !SAFE_ARGUMENT.test(value)
-  )) {
-    throw new Error("Extra command argument contains shell syntax.");
-  }
 
   const encodedEntrypoint = Buffer.from(entrypoint, "utf8").toString("base64url");
-  const suffix = [encodedEntrypoint, argument, ...extraArguments].join(" ");
+  const suffix = [encodedEntrypoint, argument].join(" ");
   return `${quotePath(runtime)} -e "${ENTRYPOINT_BOOTSTRAP}" ${suffix}`;
 }
 

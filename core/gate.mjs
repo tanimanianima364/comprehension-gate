@@ -15,15 +15,7 @@ import {
   resetGate
 } from "./state.mjs";
 import { buildPinnedEntrypointCommand } from "./command.mjs";
-import { classifyShellCommand } from "./shell.mjs";
 import { captureSnapshot, findRepository, snapshotDifference } from "./snapshot.mjs";
-import {
-  decodeInspectionArgument,
-  encodeInspectionArgument,
-  INSPECTION_ACTIONS,
-  inspectionValueCount,
-  runInspection
-} from "./inspection.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
@@ -51,25 +43,6 @@ export function controlCommand(action, options = {}) {
   );
 }
 
-export function inspectionCommand(action, values, workspace, options = {}) {
-  if (!INSPECTION_ACTIONS.has(action)) {
-    throw new Error(`Unknown inspection action: ${action}`);
-  }
-  const expectedArity = inspectionValueCount(action);
-  if (!Array.isArray(values) || values.length !== expectedArity) {
-    throw new Error(`${action} expects ${expectedArity} values.`);
-  }
-  const normalizedWorkspace = normalizeHookWorkspace(workspace);
-  if (!normalizedWorkspace) {
-    throw new Error("Inspection workspace must be an absolute path.");
-  }
-  return inspectionCommandFromEncoded(
-    action,
-    [encodeInspectionArgument(normalizedWorkspace), ...values.map(encodeInspectionArgument)],
-    options
-  );
-}
-
 export function renderInstructions(provider = "claude", options = {}) {
   const usesShellControl = provider === "codex";
   const commandOptions = controlCommandOptions(options);
@@ -88,14 +61,8 @@ export function renderInstructions(provider = "claude", options = {}) {
     .replaceAll(
       "{{CONTROL_METHOD}}",
       usesShellControl
-        ? "In Codex, run the command exactly as shown. Apart from the inspection commands below, these are the only shell commands available while the gate is pending. Do not add whitespace, arguments, wrappers, or different quoting."
+        ? "In Codex, run the command exactly as shown. Do not add whitespace, arguments, wrappers, or different quoting."
         : "Read the path exactly as shown with the host's native file-reading tool. Do not use a shell command to read it."
-    )
-    .replaceAll(
-      "{{INSPECTION_METHOD}}",
-      usesShellControl
-        ? formatCodexInspectionInstructions(options.cwd, commandOptions)
-        : "Use the host's native file-reading and search tools for codebase inspection."
     );
 }
 
@@ -105,15 +72,15 @@ export function handleHook(input, mode = "compatible", options = {}) {
   const commandOptions = controlCommandOptions(options);
   const provider = detectProvider(mode, env);
   const event = normalizeEvent(input?.hook_event_name);
-  // Only trusted lifecycle events may record the workspace Codex inspection is pinned to.
+  // Only trusted lifecycle events may record the workspace the gate tracks.
   const trustedReset = { workspace: normalizeHookWorkspace(hookDirectory(input)) };
   const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
   const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
   const isStopEvent = event === "stop" || event === "agentstop";
 
   if (!isStartEvent && !isPromptEvent && !isStopEvent && event !== "posttooluse" && event !== "pretooluse") {
-    return blockingErrorResult(
-      `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}) and fails closed.`
+    return nonBlockingErrorResult(
+      `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}).`
     );
   }
 
@@ -187,79 +154,17 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return stopHoldResult(mode, input, holdReason(changes, provider, commandOptions), userNotice(changes));
     }
 
-    const state = ensureGateState(provider, input, stateOptions);
-    const toolKind = classifyTool(input?.tool_name, provider);
-    const gate = checkGate(provider, input, stateOptions);
-
-    /*
-     * The shell rules are written for the one platform this plugin is tested
-     * on. Anywhere else the scan may apply the wrong grammar and the command
-     * table the wrong names -- a PowerShell `Remove-Item` matches nothing and
-     * would look like inspection -- so while the gate is pending, refuse every
-     * shell tool rather than guess. Only the shell closes: native reads still
-     * work, so the gate still functions elsewhere with less available to it.
-     *
-     * It applies only while pending. After pass this hook goes silent and the
-     * host's permission model is the authority, on every platform; carrying
-     * the refusal past that point would leave the shell permanently unusable
-     * rather than merely unjudged.
-     *
-     * Within the pending path it sits ahead of the control and inspection
-     * exceptions on purpose. Those match a command exactly and return before
-     * the classifier is ever consulted, so a guard inside classifyShellCommand
-     * would not be reached by them. Keying on the tool kind rather than the
-     * provider leaves native reads working on every host, which is how Claude
-     * Code, Cursor, and Kiro still pass here.
-     */
-    if (!gate.satisfied && (options.platform ?? process.platform) !== "linux" && toolKind === "shell") {
-      return denyResult(
-        mode,
-        "Comprehension Gate judges shell commands as Linux shell commands and cannot judge them on this platform, so no shell command is available until the gate passes. Use the host's native file-reading and search tools."
-      );
-    }
-
+    ensureGateState(provider, input, stateOptions);
     const action = controlActionFor(input, provider, commandOptions);
     if (action) {
       armGateControl(provider, input, action, stateOptions);
-      return allowResult();
     }
-    if (provider === "codex" && codexInspectionAction(input, state, commandOptions)) {
-      return allowResult();
-    }
-    /*
-     * Allow by default. The gate denies a named set -- tools whose primary use
-     * is writing, and shell commands that classify as writing -- and lets
-     * everything else through.
-     *
-     * The asymmetry is why. A tool missing from the deny set means one change
-     * reaches the project without a comprehension check, with the user present
-     * and the instructions still telling the agent not to mutate. A tool
-     * wrongly denied costs capability in every session, silently, until
-     * somebody trips over it: an earlier allowlist denied ToolSearch and plan
-     * mode while the session instructions promised that gathering information
-     * and planning were allowed. The common mutation paths are named; the long
-     * tail is accepted, exactly as it already is for shell commands.
-     */
-    if (toolKind === "shell") {
-      if (classifyShellCommand(input?.tool_input?.command, { cwd: input?.cwd }) === "read") {
-        return allowResult();
-      }
-    } else if (toolKind !== "write") {
-      return allowResult();
-    }
-    if (gate.satisfied) {
-      return allowResult();
-    }
-
-    return denyResult(
-      mode,
-      denialReason(gate.reason, toolKind, provider, commandOptions, input?.cwd)
-    );
+    return allowResult();
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
     if (isStartEvent) {
       return blockingErrorResult(
-        `Comprehension Gate could not initialize for this session. ${detail} The gate remains pending; do not modify the project.`
+        `Comprehension Gate could not initialize for this session. ${detail} Changes made in this session will not be checked.`
       );
     }
     if (isPromptEvent) {
@@ -278,16 +183,14 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (isStopEvent) {
       return stopErrorResult(mode, `Comprehension Gate could not check the project for changes. ${detail}`);
     }
-    return denyResult(mode, `Comprehension Gate failed closed. ${detail}`);
+    return allowResult();
   }
 }
 
 // Unparseable stdin means the event type is unknown too, so no event-specific
-// payload can be trusted; a non-zero exit fails closed for every event.
+// payload can be trusted; a non-zero, non-blocking exit reports this for every event.
 export function malformedInputResult() {
-  return blockingErrorResult(
-    "Comprehension Gate could not parse hook input and fails closed. Do not modify the project yet."
-  );
+  return nonBlockingErrorResult("Comprehension Gate could not parse hook input.");
 }
 
 export function controlTransitionSucceeded(input, provider, action) {
@@ -332,29 +235,8 @@ function normalizeEvent(event) {
   return String(event ?? "").toLowerCase();
 }
 
-function classifyTool(toolName, provider = null) {
-  const normalized = String(toolName ?? "").toLowerCase();
-  // Matched exactly: "Read2" or "@fs/read" must not stand in for "Read" when
-  // the question is whether this call may arm a control marker.
-  if (CONTROL_READ_TOOLS_BY_PROVIDER[provider]?.has(normalized)) {
-    return "read";
-  }
-  /*
-   * The write list is the only thing standing between a pending gate and a
-   * mutation, so it matches wider. An MCP tool arrives namespaced --
-   * `mcp__filesystem__write_file`, `@filesystem/write_file`,
-   * `MCP:filesystem.write_file` -- and its last segment is the verb. Matching
-   * that too can only ever deny more, which is the safe direction for a
-   * denylist, the same reason shell command names drop their directory and
-   * executable extension before matching.
-   */
-  if (WRITE_TOOLS.has(normalized) || WRITE_TOOLS.has(lastNameSegment(normalized))) {
-    return "write";
-  }
-  if (SHELL_TOOLS.has(normalized)) {
-    return "shell";
-  }
-  return "other";
+function isControlReadTool(toolName, provider) {
+  return CONTROL_READ_TOOLS_BY_PROVIDER[provider]?.has(String(toolName ?? "").toLowerCase()) ?? false;
 }
 
 function parseJsonString(value) {
@@ -399,7 +281,7 @@ function controlActionFor(input, provider, commandOptions = {}) {
     return codexShellControlAction(input, commandOptions);
   }
 
-  if (classifyTool(input?.tool_name, provider) !== "read") {
+  if (!isControlReadTool(input?.tool_name, provider)) {
     return null;
   }
   const target = provider === "kiro"
@@ -426,48 +308,6 @@ function codexShellControlAction(input, commandOptions) {
   }
   for (const action of CONTROL_ACTIONS) {
     if (command === controlCommand(action, commandOptions)) {
-      return action;
-    }
-  }
-  return null;
-}
-
-function codexInspectionAction(input, state, commandOptions) {
-  if (input?.tool_name !== "Bash") {
-    return null;
-  }
-  const command = input?.tool_input?.command;
-  const workspace = normalizeHookWorkspace(input?.cwd);
-  if (typeof command !== "string" || !workspace) {
-    return null;
-  }
-  // Pin inspection to the canonical workspace recorded by the last trusted
-  // lifecycle event; a per-call cwd may only narrow the readable tree.
-  if (state.workspace === null || !isSameOrDescendant(state.workspace, workspace)) {
-    return null;
-  }
-
-  for (const action of INSPECTION_ACTIONS) {
-    const valueCount = inspectionValueCount(action);
-    const tokenPattern = "([A-Za-z0-9_-]+)";
-    const match = command.match(new RegExp(` ${action} ${tokenPattern}(?: ${tokenPattern}){${valueCount}}$`));
-    if (!match) {
-      continue;
-    }
-    const suffix = command.slice(match.index + 1).split(" ");
-    const encodedArguments = suffix.slice(1);
-    try {
-      const decodedWorkspace = decodeInspectionArgument(encodedArguments[0]);
-      for (const token of encodedArguments.slice(1)) {
-        decodeInspectionArgument(token);
-      }
-      if (decodedWorkspace !== workspace) {
-        continue;
-      }
-    } catch {
-      continue;
-    }
-    if (command === inspectionCommandFromEncoded(action, encodedArguments, commandOptions)) {
       return action;
     }
   }
@@ -512,34 +352,6 @@ function contextResult(mode, eventName, context) {
   };
 }
 
-function denyResult(mode, reason) {
-  if (mode === "kiro") {
-    return { exitCode: 2, stdout: "", stderr: `${reason}\n` };
-  }
-  if (mode === "cursor") {
-    return {
-      exitCode: 0,
-      stdout: `${JSON.stringify({
-        permission: "deny",
-        user_message: reason,
-        agent_message: reason
-      })}\n`,
-      stderr: ""
-    };
-  }
-  return {
-    exitCode: 0,
-    stdout: `${JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: reason
-      }
-    })}\n`,
-    stderr: ""
-  };
-}
-
 function promptBlockResult(mode, reason) {
   if (mode === "cursor") {
     return {
@@ -555,34 +367,12 @@ function blockingErrorResult(reason) {
   return { exitCode: 2, stdout: "", stderr: `${reason}\n` };
 }
 
-function allowResult() {
-  return { exitCode: 0, stdout: "", stderr: "" };
+function nonBlockingErrorResult(reason) {
+  return { exitCode: 1, stdout: "", stderr: `${reason}\n` };
 }
 
-function denialReason(stateReason, toolKind, provider, commandOptions = {}, cwd) {
-  const toolNote = toolKind === "shell"
-    ? " This shell command can write, run project code, or needs a shell parser to understand, so it is denied while the gate is pending. Plain inspection commands are available."
-    : toolKind === "write"
-      ? " Writing is this tool's primary use, so it is denied while the gate is pending. Reading, searching, and other tools are available."
-      : "";
-  const controlInstruction = provider === "codex"
-    ? [
-        `After mastery, run this exact Codex pass command: ${controlCommand("pass", commandOptions)}`,
-        `For a genuinely LOW change only, run this exact Codex LOW bypass command: ${controlCommand("bypass-low", commandOptions)}`
-      ]
-    : [
-        `After mastery, read this exact control target with a native file-reading tool: ${controlTarget("pass")}`,
-        `For a genuinely LOW change only, read this exact control target with a native file-reading tool: ${controlTarget("bypass-low")}`
-      ];
-  const lines = [
-    `Comprehension Gate is not satisfied for the current user turn (${stateReason}).`,
-    "Classify it silently: LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer.",
-    "Ask the minimum codebase-specific question(s) and wait for the user to demonstrate understanding in their own words.",
-    ...controlInstruction,
-    provider === "codex" ? formatCodexInspectionInstructions(cwd, commandOptions) : "",
-    toolNote
-  ];
-  return lines.join(" ").trim();
+function allowResult() {
+  return { exitCode: 0, stdout: "", stderr: "" };
 }
 
 // A snapshot that cannot be taken (corrupt index, git timeout, missing
@@ -677,48 +467,6 @@ function controlCommandOptions(options = {}) {
   };
 }
 
-function inspectionCommandFromEncoded(action, encodedArguments, options = {}) {
-  return buildPinnedEntrypointCommand(
-    options.entrypoint ?? SCRIPT_PATH,
-    action,
-    options.runtime ?? process.execPath,
-    encodedArguments
-  );
-}
-
-function formatCodexInspectionInstructions(cwd, commandOptions = {}) {
-  const workspace = normalizeHookWorkspace(cwd);
-  if (!workspace) {
-    return "Codex inspection commands are unavailable because the hook did not supply an absolute workspace cwd; remain fail-closed and do not use another shell command.";
-  }
-  const root = encodeInspectionArgument(workspace);
-  const read = inspectionCommandFromEncoded(
-    "inspect-read",
-    [root, "BASE64URL_PATH"],
-    commandOptions
-  );
-  const search = inspectionCommandFromEncoded(
-    "inspect-search",
-    [root, "BASE64URL_PATTERN", "BASE64URL_ROOT"],
-    commandOptions
-  );
-  return [
-    "Codex may inspect this workspace before pass only through these pinned commands.",
-    "Replace each BASE64URL_* placeholder with the unpadded base64url encoding of its UTF-8 value; keep every other byte exact.",
-    "Paths and roots must be workspace-relative. Examples: README.md = UkVBRE1FLm1k, auth = YXV0aA, . = Lg.",
-    `Read one UTF-8 file:\n${read}`,
-    `Search UTF-8 files for a literal string:\n${search}`
-  ].join("\n");
-}
-
-function isSameOrDescendant(root, candidate) {
-  const relative = path.relative(root, candidate);
-  if (relative === "") {
-    return true;
-  }
-  return !path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..";
-}
-
 // Claude Code, Codex, and Kiro send cwd; Cursor sends workspace_roots.
 export function hookDirectory(input) {
   if (typeof input?.cwd === "string" && input.cwd !== "") {
@@ -744,53 +492,19 @@ function normalizeHookWorkspace(value) {
   }
 }
 
-// A single underscore is part of a verb ("str_replace"); a doubled one is an
-// MCP namespace separator, as are "/", ".", and ":".
-const NAME_SEPARATOR = /__|[/.:]/;
-
-function lastNameSegment(normalized) {
-  const segments = normalized.split(NAME_SEPARATOR);
-  return segments[segments.length - 1];
-}
-
-const WRITE_TOOLS = new Set([
-  "apply_patch",
-  "delete",
-  "delete_file",
-  "edit",
-  "enterworktree",
-  "exitworktree",
-  "fs_write",
-  "fswrite",
-  "notebookedit",
-  "str_replace",
-  "str_replace_based_edit_tool",
-  "write",
-  "writefile",
-  // Verbs an MCP server commonly exposes; reached through lastNameSegment.
-  "create_directory",
-  "create_file",
-  "edit_file",
-  "move_file",
-  "patch_file",
-  "put_file",
-  "remove_file",
-  "write_file"
-]);
-
 /*
- * Tools that may arm a control marker, keyed by provider. This is no longer a
- * permission list -- the default became allow, so a tool does not need to be
- * here to run -- and it now has exactly one job: naming the native local file
- * reads whose reading of a plugin-owned marker counts as pass or LOW bypass.
+ * Tools that may arm a control marker, keyed by provider. This is not a
+ * permission list -- every tool is allowed to run -- and it has exactly one
+ * job: naming the native local file reads whose reading of a plugin-owned
+ * marker counts as pass or LOW bypass.
  *
  * Nothing else belongs here even if it is harmless to run. A network fetch is
- * allowed while pending, but it must not be able to arm a control: given a
- * `path` naming the marker and a response body containing it, it would satisfy
- * the gate without ever reading the file. A name proves nothing across hosts
- * either, so only verified built-ins are listed; Codex has no entry at all,
- * because a built-in such as view_image can be disabled by feature flag and
- * its name taken over by an extension, and it uses the pinned bridge instead.
+ * allowed, but it must not be able to arm a control: given a `path` naming
+ * the marker and a response body containing it, it would satisfy the gate
+ * without ever reading the file. A name proves nothing across hosts either,
+ * so only verified built-ins are listed; Codex has no entry at all, because a
+ * built-in such as view_image can be disabled by feature flag and its name
+ * taken over by an extension, and it uses the pinned shell bridge instead.
  */
 const CONTROL_READ_TOOLS_BY_PROVIDER = {
   claude: new Set(["glob", "grep", "read"]),
@@ -799,40 +513,11 @@ const CONTROL_READ_TOOLS_BY_PROVIDER = {
   codex: new Set()
 };
 
-
-/*
- * Shell tools run their command through classifyShellCommand on every
- * provider. Unlike the lists above, this is not keyed by provider: those trust
- * a name to mean "read-only", whereas the classifier trusts nothing about the
- * name and reads the command itself. A tool that carries no `command` string
- * fails closed there, so an unfamiliar shell tool is denied rather than
- * waved through.
- */
-const SHELL_TOOLS = new Set([
-  "bash",
-  "control_bash_process",
-  "execute_bash",
-  "execute_cmd",
-  "execute_command",
-  "powershell",
-  "shell"
-]);
-
 export async function main() {
-  const [mode = "compatible", ...argumentsAfterMode] = process.argv.slice(2);
+  const [mode = "compatible"] = process.argv.slice(2);
 
   if (CONTROL_ACTIONS.has(mode)) {
     process.stdout.write(`${CONTROL_MARKERS[mode]}\n`);
-    return;
-  }
-
-  if (INSPECTION_ACTIONS.has(mode)) {
-    try {
-      runInspection(mode, argumentsAfterMode);
-    } catch (error) {
-      process.stderr.write(`Comprehension Gate inspection failed: ${error.message}\n`);
-      process.exitCode = 2;
-    }
     return;
   }
 

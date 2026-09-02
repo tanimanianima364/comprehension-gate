@@ -11,7 +11,6 @@ import {
   buildPinnedEntrypointCommand
 } from "../core/command.mjs";
 import { handleHook } from "../core/gate.mjs";
-import { readGateState } from "../core/state.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -152,48 +151,6 @@ test("adapter renderer safely executes roots with shell metacharacters", () => {
   }
 });
 
-test("Kiro adapter matches and blocks every documented 3.x mutation tool", () => {
-  const config = readJson("adapters/kiro/hooks.json");
-  const preHook = config.hooks.find(hook => hook.trigger === "PreToolUse");
-  const postHook = config.hooks.find(hook => hook.trigger === "PostToolUse");
-  const mutationTools = [
-    "fs_write",
-    "str_replace",
-    "delete_file",
-    "execute_bash",
-    "control_bash_process"
-  ];
-
-  assert.equal(preHook.matcher, "*");
-  assert.equal(postHook.matcher, "*");
-
-  const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-kiro-"));
-  const env = {
-    ...process.env,
-    COMPREHENSION_GATE_STATE_DIR: stateDirectory
-  };
-  const session = "kiro-entrypoint";
-  const start = runKiroHook({ session_id: session, hook_event_name: "SessionStart" }, env);
-  assert.equal(start.status, 0, start.stderr);
-  assert.match(start.stdout, /Comprehension Gate/);
-  const state = readGateState("kiro", { session_id: session }, { env });
-  assert.equal(state.ok, true);
-  assert.equal(state.state.status, "pending");
-
-  for (const toolName of [...mutationTools, "@filesystem/write_file"]) {
-    const result = runKiroHook(
-      {
-        session_id: session,
-        hook_event_name: "preToolUse",
-        tool_name: toolName,
-        tool_input: toolName === "execute_bash" ? { command: "touch blocked" } : {}
-      },
-      env
-    );
-    assert.equal(result.status, 2, `${toolName}: ${result.stderr}`);
-  }
-});
-
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }
@@ -245,12 +202,4 @@ function assertShellPathIsOpaque(command, rawPath) {
   for (const token of ["$HOME", "$(", "%TEMP%", "&", "|", "^", "!", "`"]) {
     assert.equal(command.includes(token), false, token);
   }
-}
-
-function runKiroHook(input, env) {
-  return spawnSync(
-    process.execPath,
-    [path.join(root, "core", "gate.mjs"), "kiro"],
-    { encoding: "utf8", input: JSON.stringify(input), env }
-  );
 }

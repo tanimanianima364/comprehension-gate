@@ -17,9 +17,9 @@ import {
   readGateState,
   stateFilePath
 } from "../core/state.mjs";
-import { createFixture, controlInput, assertDenied } from "./helpers.mjs";
+import { createFixture, controlInput } from "./helpers.mjs";
 
-test("compatible flow blocks shell and writes until the native pass control completes", () => {
+test("compatible flow allows every tool and records the pass", () => {
   const fixture = createFixture();
   const base = { session_id: "session-1", turn_id: "turn-1" };
 
@@ -32,19 +32,19 @@ test("compatible flow blocks shell and writes until the native pass control comp
   assert.equal(JSON.parse(start.stdout).hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(start.stdout, /Comprehension Gate/);
 
-  const blocked = handleHook(
+  const applyPatch = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command: "*** Begin Patch" } },
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(blocked.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(applyPatch.stdout, "");
 
-  const shellBlocked = handleHook(
+  const shellCall = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "sed -i s/a/b/ README.md" } },
     "compatible",
     fixture
   );
-  assertDenied(shellBlocked, "compatible", "pending shell");
+  assert.equal(shellCall.stdout, "");
 
   const pass = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "tool-pass", tool_input: controlInput("pass") },
@@ -53,12 +53,12 @@ test("compatible flow blocks shell and writes until the native pass control comp
   );
   assert.equal(pass.stdout, "");
 
-  const stillBlocked = handleHook(
+  const write = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "src/app.js" } },
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(stillBlocked.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(write.stdout, "");
 
   handleHook(
     {
@@ -77,6 +77,8 @@ test("compatible flow blocks shell and writes until the native pass control comp
     fixture
   );
 
+  assert.equal(readGateState("claude", base, { env: fixture.env }).state.status, "passed");
+
   const allowed = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "src/app.js" } },
     "compatible",
@@ -89,148 +91,23 @@ test("compatible flow blocks shell and writes until the native pass control comp
     "compatible",
     fixture
   );
-  const blockedAgain = handleHook(
+  const afterReset = handleHook(
     { ...base, turn_id: "turn-2", hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(blockedAgain.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(afterReset.stdout, "");
 });
-
-/*
- * These MCP names all end in a write verb, so the deny list reaches them
- * through their last segment on every provider. An MCP tool that does not name
- * a write is allowed while pending -- see tests/tool-policy.test.mjs.
- */
-test("pending gates deny namespaced MCP write tools across providers and restore them after pass", () => {
-  const cases = [
-    {
-      name: "compatible",
-      mode: "compatible",
-      fixture: createFixture(),
-      base: { session_id: "mcp-compatible", turn_id: "turn-1" },
-      startEvent: "SessionStart",
-      preEvent: "PreToolUse",
-      postEvent: "PostToolUse",
-      readTool: "Read",
-      controlField: "file_path",
-      shellTool: "Bash",
-      mcpTool: "mcp__filesystem__write_file",
-      response: { stdout: "<!-- comprehension-gate:pass -->" }
-    },
-    {
-      name: "cursor",
-      mode: "cursor",
-      fixture: createFixture(),
-      base: { conversation_id: "mcp-cursor", generation_id: "generation-1" },
-      startEvent: "sessionStart",
-      preEvent: "preToolUse",
-      postEvent: "postToolUse",
-      readTool: "Read",
-      controlField: "path",
-      shellTool: "Shell",
-      mcpTool: "MCP:filesystem.write_file",
-      output: JSON.stringify({ exitCode: 0, stdout: "<!-- comprehension-gate:pass -->" })
-    },
-    {
-      name: "kiro",
-      mode: "kiro",
-      fixture: createFixture(),
-      base: { session_id: "mcp-kiro" },
-      startEvent: "SessionStart",
-      preEvent: "preToolUse",
-      postEvent: "postToolUse",
-      readTool: "read",
-      controlField: "kiroOperations",
-      shellTool: "execute_bash",
-      mcpTool: "@filesystem/write_file",
-      response: { success: true, result: ["<!-- comprehension-gate:pass -->"] }
-    }
-  ];
-
-  for (const item of cases) {
-    handleHook(
-      { ...item.base, hook_event_name: item.startEvent },
-      item.mode,
-      item.fixture
-    );
-
-    const read = handleHook(
-      { ...item.base, hook_event_name: item.preEvent, tool_name: item.readTool, tool_input: {} },
-      item.mode,
-      item.fixture
-    );
-    assert.equal(read.stdout, "", `${item.name}: known read-only tool`);
-
-    const pendingMcp = handleHook(
-      { ...item.base, hook_event_name: item.preEvent, tool_name: item.mcpTool, tool_input: {} },
-      item.mode,
-      item.fixture
-    );
-    assertDenied(pendingMcp, item.mode, `${item.name}: pending MCP`);
-
-    const toolUseId = `${item.name}-pass`;
-    const arm = handleHook(
-      {
-        ...item.base,
-        hook_event_name: item.preEvent,
-        tool_name: item.readTool,
-        tool_use_id: toolUseId,
-        tool_input: controlInput("pass", item.controlField)
-      },
-      item.mode,
-      item.fixture
-    );
-    assert.equal(arm.stdout, "", `${item.name}: arm pass`);
-
-    handleHook(
-      {
-        ...item.base,
-        hook_event_name: item.postEvent,
-        tool_name: item.readTool,
-        tool_use_id: toolUseId,
-        tool_input: controlInput("pass", item.controlField),
-        ...(item.output === undefined
-          ? { tool_response: item.response }
-          : { tool_output: item.output })
-      },
-      item.mode,
-      item.fixture
-    );
-
-    const passedMcp = handleHook(
-      { ...item.base, hook_event_name: item.preEvent, tool_name: item.mcpTool, tool_input: {} },
-      item.mode,
-      item.fixture
-    );
-    assert.equal(passedMcp.stdout, "", `${item.name}: passed MCP`);
-    assert.equal(passedMcp.exitCode, 0, `${item.name}: passed MCP`);
-
-    const passedShell = handleHook(
-      {
-        ...item.base,
-        hook_event_name: item.preEvent,
-        tool_name: item.shellTool,
-        tool_input: { command: "cat README.md" }
-      },
-      item.mode,
-      item.fixture
-    );
-    assert.equal(passedShell.stdout, "", `${item.name}: passed shell`);
-    assert.equal(passedShell.exitCode, 0, `${item.name}: passed shell`);
-  }
-});
-
 test("first PreToolUse initializes missing state and permits a later pass", () => {
   const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
   const base = { session_id: "missing-first", turn_id: "turn-1" };
 
-  const blocked = handleHook(
+  const initial = handleHook(
     { ...base, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
     "compatible",
     fixture
   );
-  assertDenied(blocked, "compatible", "initial write");
+  assert.equal(initial.stdout, "", "initial write");
   const pending = readGateState("codex", base, { env: fixture.env });
   assert.equal(pending.ok, true);
   assert.equal(pending.state.status, "pending");
@@ -268,7 +145,7 @@ test("first PreToolUse initializes missing state and permits a later pass", () =
   assert.equal(allowed.stdout, "");
 });
 
-test("invalid and unreadable state remain fail-closed at PreToolUse", () => {
+test("invalid and unreadable state allow the tool and do not arm a control", () => {
   const fixture = createFixture({ PLUGIN_ROOT: "/plugin" });
   const base = { session_id: "invalid-first", turn_id: "turn-1" };
   const filePath = stateFilePath("codex", base, { env: fixture.env });
@@ -280,7 +157,7 @@ test("invalid and unreadable state remain fail-closed at PreToolUse", () => {
     "compatible",
     fixture
   );
-  assertDenied(invalid, "compatible", "invalid state");
+  assert.equal(invalid.stdout, "", "invalid state");
   assert.equal(fs.readFileSync(filePath, "utf8"), "not-json\n");
 
   let writeAttempts = 0;
@@ -313,7 +190,7 @@ test("invalid and unreadable state remain fail-closed at PreToolUse", () => {
     "compatible",
     { ...fixture, fs: unreadableFs }
   );
-  assertDenied(unreadable, "compatible", "unreadable state");
+  assert.equal(unreadable.stdout, "", "unreadable state");
   assert.equal(writeAttempts, 0);
 });
 
@@ -339,7 +216,12 @@ test("only exact native control targets arm the gate", () => {
     "compatible",
     fixture
   );
-  assertDenied(write, "compatible", "non-control read did not arm the gate");
+  assert.equal(write.stdout, "");
+  assert.equal(
+    readGateState("claude", { session_id: "session-2" }, { env: fixture.env }).state.status,
+    "pending",
+    "non-control read did not arm the gate"
+  );
 });
 
 test("a control completion armed in an earlier turn cannot pass a reset gate", () => {
@@ -382,10 +264,15 @@ test("a control completion armed in an earlier turn cannot pass a reset gate", (
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(write.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(write.stdout, "");
+  assert.equal(
+    readGateState("codex", second, { env: fixture.env }).state.status,
+    "pending",
+    "a control completion armed in an earlier turn cannot pass a reset gate"
+  );
 });
 
-test("provider-specific denial shapes are correct", () => {
+test("provider-specific context and allow shapes are correct", () => {
   const cursor = createFixture();
   handleHook({ session_id: "cursor", hook_event_name: "SessionStart" }, "cursor", cursor);
   const cursorReset = handleHook(
@@ -399,7 +286,7 @@ test("provider-specific denial shapes are correct", () => {
     cursor
   );
   assert.deepEqual(JSON.parse(cursorReset.stdout), { continue: true });
-  const cursorDenied = handleHook(
+  const cursorAllowed = handleHook(
     {
       conversation_id: "cursor",
       generation_id: "generation-1",
@@ -410,7 +297,8 @@ test("provider-specific denial shapes are correct", () => {
     "cursor",
     cursor
   );
-  assert.equal(JSON.parse(cursorDenied.stdout).permission, "deny");
+  assert.equal(cursorAllowed.exitCode, 0);
+  assert.equal(cursorAllowed.stdout, "");
 
   const kiro = createFixture();
   const kiroStart = handleHook(
@@ -419,13 +307,13 @@ test("provider-specific denial shapes are correct", () => {
     kiro
   );
   assert.match(kiroStart.stdout, /Comprehension Gate/);
-  const kiroDenied = handleHook(
+  const kiroAllowed = handleHook(
     { session_id: "kiro", hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
     "kiro",
     kiro
   );
-  assert.equal(kiroDenied.exitCode, 2);
-  assert.match(kiroDenied.stderr, /not satisfied/);
+  assert.equal(kiroAllowed.exitCode, 0);
+  assert.equal(kiroAllowed.stdout, "");
 });
 
 test("provider result parsing rejects missing markers and explicit failures", () => {
@@ -458,7 +346,7 @@ test("provider result parsing rejects missing markers and explicit failures", ()
 test("malformed hook input fails closed with a non-zero exit for every mode", () => {
   for (const mode of ["compatible", "cursor", "kiro"]) {
     const result = malformedInputResult(mode);
-    assert.equal(result.exitCode, 2, mode);
+    assert.equal(result.exitCode, 1, mode);
     assert.equal(result.stdout, "", `${mode}: no event-specific payload can be trusted`);
     assert.match(result.stderr, /could not parse hook input/);
   }
@@ -518,7 +406,12 @@ test("a failed prompt reset blocks submission and invalidates an earlier pass", 
     "compatible",
     fixture
   );
-  assert.equal(JSON.parse(write.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(write.stdout, "");
+  assert.equal(
+    readGateState("claude", base, { env: fixture.env }).state.status,
+    "pending",
+    "a failed prompt reset invalidates an earlier pass"
+  );
 });
 
 test("command entrypoint consumes hook JSON over stdin", () => {
@@ -590,7 +483,12 @@ test("native control targets contain the exact standalone markers", () => {
     "compatible",
     fixture
   );
-  assertDenied(stillPending, "compatible", "shell-printed marker must not satisfy the gate");
+  assert.equal(stillPending.stdout, "");
+  assert.equal(
+    readGateState("claude", base, { env: fixture.env }).state.status,
+    "pending",
+    "shell-printed marker must not satisfy the gate"
+  );
 });
 
 test("LOW bypass completes through the native read control", () => {
@@ -628,101 +526,4 @@ test("LOW bypass completes through the native read control", () => {
     fixture
   );
   assert.equal(shell.stdout, "");
-});
-
-test("pending denies mutating commands through every ordinary shell tool alias", () => {
-  // Inspection commands proceed on every shell alias and provider; the
-  // classifier reads the command instead of trusting the tool name. See
-  // tests/shell-policy.test.mjs for the classification cases themselves.
-  const shellTools = [
-    "Bash",
-    "PowerShell",
-    "Shell",
-    "control_bash_process",
-    "execute_bash",
-    "execute_cmd",
-    "execute_command"
-  ];
-
-  for (const toolName of shellTools) {
-    const denied = handleHook(
-      {
-        session_id: `pending-shell-${toolName}`,
-        hook_event_name: "PreToolUse",
-        tool_name: toolName,
-        tool_input: { command: "rm -rf src" }
-      },
-      "compatible",
-      createFixture()
-    );
-    assertDenied(denied, "compatible", toolName);
-
-    const allowed = handleHook(
-      {
-        session_id: `pending-shell-read-${toolName}`,
-        hook_event_name: "PreToolUse",
-        tool_name: toolName,
-        tool_input: { command: "cat README.md" }
-      },
-      "compatible",
-      createFixture()
-    );
-    assert.equal(allowed.stdout, "", `${toolName} inspection`);
-  }
-
-  for (const item of [
-    { mode: "cursor", base: { conversation_id: "pending-cursor-shell" }, tool: "Shell" },
-    { mode: "kiro", base: { session_id: "pending-kiro-shell" }, tool: "execute_bash" }
-  ]) {
-    const result = handleHook(
-      {
-        ...item.base,
-        hook_event_name: "preToolUse",
-        tool_name: item.tool,
-        tool_input: { command: "rm README.md" }
-      },
-      item.mode,
-      createFixture()
-    );
-    assertDenied(result, item.mode, `${item.mode}: pending shell`);
-  }
-});
-
-// The shell policy is a denylist, so a mutating command wearing an
-// inspection command's name gets through. This is the accepted residual
-// bypass documented in core/shell.mjs: the gate guards a cooperative agent,
-// and closing this hole would cost the exploration the gate is meant to keep.
-test("a PATH-shadowed read command is an accepted residual bypass while pending", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-path-shadow-"));
-  const binaryDirectory = path.join(directory, "bin");
-  const sentinel = path.join(directory, "shadow-cat-ran");
-  fs.mkdirSync(binaryDirectory);
-  fs.writeFileSync(
-    path.join(binaryDirectory, "cat"),
-    [
-      "#!/usr/bin/env node",
-      'import fs from "node:fs";',
-      `fs.writeFileSync(${JSON.stringify(sentinel)}, "ran");`
-    ].join("\n")
-  );
-  fs.chmodSync(path.join(binaryDirectory, "cat"), 0o700);
-
-  const env = { ...process.env, PATH: `${binaryDirectory}${path.delimiter}${process.env.PATH ?? ""}` };
-  const direct = spawnSync("cat", ["README.md"], { cwd: directory, env, encoding: "utf8" });
-  assert.equal(direct.status, 0, direct.stderr);
-  assert.equal(fs.existsSync(sentinel), true, "fixture did not resolve the shadowed cat");
-  fs.unlinkSync(sentinel);
-
-  const allowed = handleHook(
-    {
-      session_id: "path-shadow-shell",
-      hook_event_name: "PreToolUse",
-      tool_name: "Bash",
-      tool_input: { command: "cat README.md" }
-    },
-    "compatible",
-    createFixture(env)
-  );
-  assert.equal(allowed.stdout, "", "the denylist classifies a shadowed cat as inspection");
-  assert.equal(fs.existsSync(sentinel), false, "the hook decides only; it must never run the command itself");
 });

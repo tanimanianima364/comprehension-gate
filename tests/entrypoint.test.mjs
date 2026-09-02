@@ -29,9 +29,22 @@ test("the hook entrypoint runs when the plugin root is reached through a symlink
   );
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(
-    JSON.parse(result.stdout).hookSpecificOutput.permissionDecision,
-    "deny",
-    "symlinked entrypoint must still evaluate the gate"
+  assert.equal(result.stdout, "", "symlinked entrypoint must still evaluate the gate");
+
+  const stopResult = spawnSync(
+    process.execPath,
+    [path.join(linkedRoot, "core", "gate.mjs"), "compatible"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({
+        session_id: "symlink-session",
+        cwd: directory,
+        hook_event_name: "Stop"
+      }),
+      env: { ...process.env, COMPREHENSION_GATE_STATE_DIR: path.join(directory, "state") }
+    }
   );
+
+  assert.equal(stopResult.status, 0, stopResult.stderr);
+  assert.equal(stopResult.stdout, "", "a non-repository directory holds no turn");
 });

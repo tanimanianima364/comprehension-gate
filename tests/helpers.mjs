@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,19 +24,6 @@ export function controlInput(action, field = "file_path") {
 
 export function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-export function assertDenied(result, mode, message) {
-  if (mode === "kiro") {
-    assert.equal(result.exitCode, 2, message);
-    return;
-  }
-  const output = JSON.parse(result.stdout);
-  if (mode === "cursor") {
-    assert.equal(output.permission, "deny", message);
-    return;
-  }
-  assert.equal(output.hookSpecificOutput.permissionDecision, "deny", message);
 }
 
 import { execFileSync } from "node:child_process";
