@@ -122,7 +122,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
           clearGateControl(provider, input, action, stateOptions);
         }
       }
-      return allowResult();
+      return toolAllowResult(mode, "PostToolUse");
     }
 
     if (isStopEvent) {
@@ -159,7 +159,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (action) {
       armGateControl(provider, input, action, stateOptions);
     }
-    return allowResult();
+    return toolAllowResult(mode, "PreToolUse");
   } catch (error) {
     const detail = error instanceof GateStateError ? error.message : "Gate state could not be verified.";
     if (isStartEvent) {
@@ -183,7 +183,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (isStopEvent) {
       return stopErrorResult(mode, `Comprehension Gate could not check the project for changes. ${detail}`);
     }
-    return allowResult();
+    return toolAllowResult(mode, "PreToolUse");
   }
 }
 
@@ -373,6 +373,16 @@ function nonBlockingErrorResult(reason) {
 
 function allowResult() {
   return { exitCode: 0, stdout: "", stderr: "" };
+}
+
+// Cursor reads an empty stdout as a hook failure, and its preToolUse is
+// registered failClosed, so an allow must be spelled out there.
+function toolAllowResult(mode, eventName) {
+  if (mode !== "cursor") {
+    return allowResult();
+  }
+  const output = eventName === "PreToolUse" ? { permission: "allow" } : {};
+  return { exitCode: 0, stdout: `${JSON.stringify(output)}\n`, stderr: "" };
 }
 
 // A snapshot that cannot be taken (corrupt index, git timeout, missing
