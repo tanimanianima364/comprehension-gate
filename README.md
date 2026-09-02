@@ -9,12 +9,12 @@ The hook never refuses a tool. It records the last explained state of the reposi
 | Agent | Hook configuration | Holds the turn | Verified against a running host |
 | --- | --- | --- | --- |
 | Claude Code | `hooks/hooks.json` | yes | yes, 2.1.258: `decision: "block"` holds once, and `systemMessage` is shown to the user on both the blocking Stop and the second (allowed) Stop |
-| Codex | the same `hooks/hooks.json` | unverified | no: whether Codex fires `Stop` at all is unverified |
-| Cursor | Claude compatibility or `adapters/cursor/hooks.json` | follow-up message (cannot hold) | no |
-| Kiro CLI 2.x | `adapters/kiro-2x/hooks.json`, merged into the agent config | warning only | yes, 2.16.2: `stop` fires once per turn (not only at session end) and carries `cwd` |
+| Codex | the same `hooks/hooks.json` | yes (Stop implemented; hold not yet observed) | yes, CLI 0.151.0: Codex discovers `hooks/hooks.json` from the installed plugin, supplies `CLAUDE_PLUGIN_ROOT`, runs `SessionStart`/`PreToolUse`/`PostToolUse`, and completes the pinned control command; Codex implements a `Stop` hook, but a hold was not observed live because the model completed a control before the turn ended in every run |
+| Cursor | Claude compatibility or `adapters/cursor/hooks.json` | follow-up message (cannot hold) | partly, `cursor-agent` CLI: hooks and controls yes; a stop follow-up was observed, not confirmed against the state file |
+| Kiro CLI 2.x | `adapters/kiro-2x/hooks.json`, merged into the agent config | warning only | yes, 2.16.2: verified end to end with the real hook command: baseline at `agentSpawn`, `stop` exits 1 with the reason, an outstanding notice on the next `userPromptSubmit`, and the baseline not retaken until a control completes |
 | Kiro CLI 3.x | `adapters/kiro/hooks.json` | warning only | no |
 
-The last column is the honest one. Only Claude Code and Kiro CLI 2.x have been exercised against a running host; the other adapters were written from each vendor's documentation and are covered by tests that model the documented contract, not by a live run. Kiro CLI 3.x in particular is still early access at the time of writing, reached with `kiro-cli --v3`, so 2.x is what most installations have.
+The last column is the honest one. Claude Code, Codex, Cursor, and Kiro CLI 2.x have now been exercised against a running host; Cursor only partly, because a `cursor-agent --resume` turn fires no hooks, so the follow-up message observed after a MEDIUM change could not be confirmed against the state file. Kiro CLI 3.x has not been exercised live; that adapter was written from vendor documentation and is covered by tests that model the documented contract, not by a live run. It is also still early access at the time of writing, reached with `kiro-cli --v3`, so 2.x is what most installations have.
 
 The two Kiro adapters differ only in packaging. 3.x reads standalone `.kiro/hooks/*.json` files; 2.x embeds the same triggers in the agent config under `hooks`. Payloads, tool names, and the exit-code-2 block are the same, so both render for the same entrypoint mode.
 
