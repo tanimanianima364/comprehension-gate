@@ -33,6 +33,11 @@ const READ_COMMANDS = [
   "git diff",
   "git status",
   "git show HEAD",
+  // fetch and branch only touch refs; neither changes a file in the working
+  // tree, which is what the gate protects.
+  "git fetch origin --quiet",
+  "git branch -r --no-merged origin/main",
+  "git branch",
   "/usr/bin/cat README.md",
   // Unknown commands pass: this is a denylist, and the residual bypass is an
   // accepted trade for not degrading exploration.
@@ -63,6 +68,7 @@ const WRITE_COMMANDS = [
   "node -e process.exit",
   "python3 script.py",
   "perl -pi script.pl",
+  // No cwd was supplied, so the script cannot be read and judged.
   "bash script.sh",
   "sudo rm README.md",
   "xargs rm",
@@ -500,6 +506,103 @@ test("shell classification applies on every provider, including Codex", () => {
       `${label} mutation`
     );
   }
+});
+
+/*
+ * A script run as `bash <path>` or `sh <path>` is judged by its contents. Inside
+ * a script the direction flips: a known write refuses, but a construct the scan
+ * cannot judge is let through, because a false denial there would take a
+ * read-only helper away from the agent for good.
+ */
+test("a script run with bash or sh is judged by its contents", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-script-"));
+  const write = (name, content) => fs.writeFileSync(path.join(cwd, name), content);
+  write("read.sh", [
+    "#!/usr/bin/env bash",
+    "# %(trailers) in a comment must not refuse the script",
+    "set -euo pipefail",
+    'N="${1:-20}"',
+    'RANGE_ARG="-n ${N}"',
+    'if [[ "${N}" == "--all" ]]; then',
+    '  RANGE_ARG=""',
+    "fi",
+    "git log ${RANGE_ARG} --format='%h %(trailers)' \\",
+    "  | awk '/x/ { printf(\"%s\\n\", $1) }'",
+    "cat < README.md",
+    'echo ""'
+  ].join("\n"));
+  write("write.sh", "cat README.md\nrm -rf src\n");
+  write("redirect.sh", "echo x > out.txt\n");
+  write("subshell.sh", "(cd src && rm -rf x)\n");
+  write("substitution.sh", "echo $(rm -rf src)\n");
+  write("git-write.sh", "git commit -m wip\n");
+  write("nested.sh", "bash read.sh\n");
+  write("self.sh", "bash self.sh\n");
+  // An unterminated expansion must not swallow the write that follows it.
+  write("unterminated.sh", "echo $(pwd\nrm -rf src\n");
+  // A script that runs itself through a symlink is still running itself.
+  write("via-link.sh", "bash link.sh\n");
+  fs.symlinkSync(path.join(cwd, "via-link.sh"), path.join(cwd, "link.sh"));
+
+  for (const command of ["bash read.sh", "sh read.sh", "bash ./read.sh 50", "bash nested.sh"]) {
+    assert.equal(classifyShellCommand(command, { cwd }), "read", command);
+  }
+  // The script may live outside cwd: a skill's helper usually does, and what
+  // is judged is what the script does, not where it is.
+  const outside = path.join(cwd, "read.sh");
+  assert.equal(classifyShellCommand(`bash ${outside}`, { cwd: os.tmpdir() }), "read");
+  const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-sibling-"));
+  assert.equal(classifyShellCommand(`bash ../${path.basename(cwd)}/read.sh`, { cwd: sibling }), "read");
+  for (const command of [
+    "bash write.sh",
+    "bash redirect.sh",
+    "bash subshell.sh",
+    "bash substitution.sh",
+    "bash git-write.sh",
+    "bash self.sh",
+    "bash unterminated.sh",
+    "bash via-link.sh",
+    "bash missing.sh",
+    "bash -x read.sh",
+    "bash $SCRIPT",
+    "bash"
+  ]) {
+    assert.equal(classifyShellCommand(command, { cwd }), "write", command);
+  }
+  // Without a cwd the script cannot be located, and a relative cwd is not one.
+  assert.equal(classifyShellCommand("bash read.sh"), "write");
+  assert.equal(classifyShellCommand("bash read.sh", { cwd: "relative" }), "write");
+  // `-c` carries its command inline, and the string is judged like any other.
+  assert.equal(classifyShellCommand("bash -c 'cat README.md'", { cwd }), "read");
+  assert.equal(classifyShellCommand("bash -c 'rm -rf src'", { cwd }), "write");
+  assert.equal(classifyShellCommand("bash -c $CMD", { cwd }), "write");
+
+  // The hook passes its cwd through, so the script is judged while pending.
+  const fixture = createFixture();
+  const session = { session_id: "shell-script" };
+  handleHook({ ...session, hook_event_name: "SessionStart", cwd }, "compatible", fixture);
+  const allowed = handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Bash", cwd, tool_input: { command: "bash read.sh" } },
+    "compatible",
+    fixture
+  );
+  assert.equal(allowed.stdout, "");
+  assert.equal(allowed.exitCode, 0);
+  const denied = handleHook(
+    { ...session, hook_event_name: "PreToolUse", tool_name: "Bash", cwd, tool_input: { command: "bash write.sh" } },
+    "compatible",
+    fixture
+  );
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("a comment and a line continuation are not part of the command", () => {
+  assert.equal(classifyShellCommand("cat README.md # (notes)"), "read");
+  assert.equal(classifyShellCommand("cat README.md \\\n  package.json"), "read");
+  // A # inside a word or inside quotes is literal.
+  assert.equal(classifyShellCommand("grep -rn a#b core"), "read");
+  assert.equal(classifyShellCommand("grep -rn '#include' core"), "read");
+  assert.equal(classifyShellCommand("rm -rf src # harmless"), "write");
 });
 
 test("a missing or non-string command is denied rather than treated as inspection", () => {
