@@ -298,7 +298,7 @@ test("provider-specific context and allow shapes are correct", () => {
     cursor
   );
   assert.equal(cursorAllowed.exitCode, 0);
-  assert.equal(cursorAllowed.stdout, "");
+  assert.deepEqual(JSON.parse(cursorAllowed.stdout), { permission: "allow" });
 
   const kiro = createFixture();
   const kiroStart = handleHook(
@@ -314,6 +314,62 @@ test("provider-specific context and allow shapes are correct", () => {
   );
   assert.equal(kiroAllowed.exitCode, 0);
   assert.equal(kiroAllowed.stdout, "");
+});
+
+test("cursor preToolUse and postToolUse answer with JSON so failClosed does not block every tool", () => {
+  const fixture = createFixture();
+  handleHook({ conversation_id: "cursor-json", hook_event_name: "sessionStart" }, "cursor", fixture);
+  const base = { conversation_id: "cursor-json", generation_id: "generation-1" };
+
+  const preToolUse = handleHook(
+    { ...base, hook_event_name: "preToolUse", tool_name: "Write", tool_input: {} },
+    "cursor",
+    fixture
+  );
+  assert.equal(preToolUse.exitCode, 0);
+  assert.deepEqual(JSON.parse(preToolUse.stdout), { permission: "allow" });
+
+  const postToolUse = handleHook(
+    {
+      ...base,
+      hook_event_name: "postToolUse",
+      tool_name: "Write",
+      tool_input: {},
+      tool_output: JSON.stringify({ exitCode: 0, stdout: "" })
+    },
+    "cursor",
+    fixture
+  );
+  assert.equal(postToolUse.exitCode, 0);
+  assert.deepEqual(JSON.parse(postToolUse.stdout), {});
+});
+
+test("cursor preToolUse still answers allow when the state file cannot be read", () => {
+  const fixture = createFixture();
+  const base = { conversation_id: "cursor-unreadable", generation_id: "generation-1" };
+  handleHook({ ...base, hook_event_name: "sessionStart" }, "cursor", fixture);
+  const filePath = stateFilePath("cursor", base, { env: fixture.env });
+  fs.writeFileSync(filePath, "{not json");
+
+  const preToolUse = handleHook(
+    { ...base, hook_event_name: "preToolUse", tool_name: "Write", tool_input: {} },
+    "cursor",
+    fixture
+  );
+  assert.equal(preToolUse.exitCode, 0);
+  assert.deepEqual(JSON.parse(preToolUse.stdout), { permission: "allow" });
+});
+
+test("compatible preToolUse still answers with empty stdout", () => {
+  const fixture = createFixture();
+  handleHook({ session_id: "compatible-empty", hook_event_name: "SessionStart" }, "compatible", fixture);
+  const preToolUse = handleHook(
+    { session_id: "compatible-empty", hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
+    "compatible",
+    fixture
+  );
+  assert.equal(preToolUse.exitCode, 0);
+  assert.equal(preToolUse.stdout, "");
 });
 
 test("provider result parsing rejects missing markers and explicit failures", () => {

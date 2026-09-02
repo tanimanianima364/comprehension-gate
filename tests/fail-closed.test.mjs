@@ -113,7 +113,11 @@ test("a pending state seeded without a turn id adopts the first turn id it sees"
     "cursor",
     fixture
   );
-  assert.equal(arm.stdout, "", "control read must be allowed after adopting the turn");
+  assert.deepEqual(
+    JSON.parse(arm.stdout),
+    { permission: "allow" },
+    "control read must be allowed after adopting the turn"
+  );
 
   handleHook(
     {
@@ -133,7 +137,11 @@ test("a pending state seeded without a turn id adopts the first turn id it sees"
     "cursor",
     fixture
   );
-  assert.equal(write.stdout, "", "pass must satisfy the adopted turn");
+  assert.deepEqual(
+    JSON.parse(write.stdout),
+    { permission: "allow" },
+    "pass must satisfy the adopted turn"
+  );
 
   const otherSession = { ...session, generation_id: "generation-2" };
   const otherTurn = handleHook(
@@ -141,7 +149,7 @@ test("a pending state seeded without a turn id adopts the first turn id it sees"
     "cursor",
     fixture
   );
-  assert.equal(otherTurn.stdout, "");
+  assert.deepEqual(JSON.parse(otherTurn.stdout), { permission: "allow" });
   assert.equal(
     readGateState("cursor", otherSession, { env: fixture.env }).state.status,
     "pending",
