@@ -547,6 +547,12 @@ test("a script run with bash or sh is judged by its contents", () => {
   for (const command of ["bash read.sh", "sh read.sh", "bash ./read.sh 50", "bash nested.sh"]) {
     assert.equal(classifyShellCommand(command, { cwd }), "read", command);
   }
+  // The script may live outside cwd: a skill's helper usually does, and what
+  // is judged is what the script does, not where it is.
+  const outside = path.join(cwd, "read.sh");
+  assert.equal(classifyShellCommand(`bash ${outside}`, { cwd: os.tmpdir() }), "read");
+  const sibling = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-sibling-"));
+  assert.equal(classifyShellCommand(`bash ../${path.basename(cwd)}/read.sh`, { cwd: sibling }), "read");
   for (const command of [
     "bash write.sh",
     "bash redirect.sh",
