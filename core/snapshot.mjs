@@ -15,6 +15,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const GIT_TIMEOUT_MS = 10_000;
+const CHUNK_BYTES = 1024 * 1024;
+const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
 
 function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], {
@@ -121,10 +123,57 @@ function hashOf(filePath) {
       return `link:${createHash("sha256").update(fs.readlinkSync(filePath)).digest("hex")}`;
     }
     if (stat.isDirectory()) {
-      return "directory";
+      return `directory:${createHash("sha256").update(directoryListing(filePath)).digest("hex")}`;
     }
-    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    return contentHash(filePath);
   } catch {
     return "missing";
   }
+}
+
+/*
+ * `git status` never descends into another repository: a nested checkout or a
+ * submodule is one entry naming a directory. Its contents are described here
+ * instead, by every regular file's path, size and modification time, so a
+ * second change inside it is still a change.
+ */
+function directoryListing(directory) {
+  const lines = [];
+  const pending = [""];
+  while (pending.length > 0) {
+    const relativeDirectory = pending.pop();
+    for (const entry of fs.readdirSync(path.join(directory, relativeDirectory), { withFileTypes: true })) {
+      const relativePath = path.join(relativeDirectory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== ".git") {
+          pending.push(relativePath);
+        }
+        continue;
+      }
+      // Symlinks are neither a directory nor a file here, so nothing is followed.
+      if (!entry.isFile()) {
+        continue;
+      }
+      const stat = fs.lstatSync(path.join(directory, relativePath));
+      lines.push(`${relativePath}\0${stat.size}\0${stat.mtimeMs}\n`);
+    }
+  }
+  return lines.sort().join("");
+}
+
+// Read in chunks: an untracked artifact that is not gitignored can be larger
+// than memory allows, and it is hashed three or more times per turn.
+function contentHash(filePath) {
+  const digest = createHash("sha256");
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    let read = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+    while (read > 0) {
+      digest.update(chunk.subarray(0, read));
+      read = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return digest.digest("hex");
 }

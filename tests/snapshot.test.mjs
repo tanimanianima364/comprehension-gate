@@ -69,6 +69,34 @@ test("edits, additions, deletions, and commits are differences; ignored files ar
   fs.writeFileSync(path.join(repository, "README.md"), "# Committed\n");
   git(repository, ["commit", "-q", "-a", "-m", "edit"]);
   assert.deepEqual(snapshotDifference(baseline, captureSnapshot(found)), [`${repository} (HEAD)`]);
+
+  // A file larger than one read chunk is hashed by content, not skipped.
+  const large = path.join(repository, "large.bin");
+  const bytes = Buffer.alloc(3 * 1024 * 1024, 7);
+  fs.writeFileSync(large, bytes);
+  assert.deepEqual(snapshotDifference(baseline, captureSnapshot(found)), [`${repository} (HEAD)`, large]);
+  const withLarge = captureSnapshot(found);
+  bytes[bytes.length - 1] = 8;
+  fs.writeFileSync(large, bytes);
+  assert.deepEqual(snapshotDifference(withLarge, captureSnapshot(found)), [large]);
+});
+
+test("a change inside a nested repository is a difference", () => {
+  const repository = createRepository();
+  const nested = path.join(repository, "inner");
+  fs.mkdirSync(nested);
+  git(nested, ["init", "-q", "-b", "main"]);
+  fs.writeFileSync(path.join(nested, "a.js"), "export {};\n");
+
+  const found = findRepository(repository);
+  const baseline = captureSnapshot(found);
+  assert.deepEqual(snapshotDifference(baseline, captureSnapshot(found)), []);
+
+  // git status collapses the nested repository into one entry, so the first
+  // change is caught by the entry appearing; this is the second change.
+  fs.writeFileSync(path.join(nested, "a.js"), "export const a = 1;\n");
+  // git reports the untracked nested repository with a trailing separator.
+  assert.deepEqual(snapshotDifference(baseline, captureSnapshot(found)), [`${nested}${path.sep}`]);
 });
 
 test("a change in a second worktree is a difference in the same repository", () => {
