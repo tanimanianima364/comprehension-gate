@@ -36,6 +36,9 @@ test("shared hook config covers session start, prompt, control completion, and s
   assert.ok(config.hooks.UserPromptSubmit);
   assert.ok(config.hooks.PostToolUse);
   assert.ok(config.hooks.Stop);
+  // Every event shells out to git, so none may be killed before git's own timeout.
+  assert.equal(config.hooks.SessionStart[0].hooks[0].timeout, 20);
+  assert.equal(config.hooks.UserPromptSubmit[0].hooks[0].timeout, 20);
   assert.equal(config.hooks.Stop[0].hooks[0].timeout, 20);
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
 });

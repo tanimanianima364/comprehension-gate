@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { handleHook } from "../core/gate.mjs";
-import { readGateState } from "../core/state.mjs";
+import { readGateState, stateFilePath } from "../core/state.mjs";
 import { createFixture, controlInput, createRepository, git } from "./helpers.mjs";
 
 function session(mode, repository, extra = {}) {
@@ -183,6 +183,28 @@ test("a corrupt git index does not fail closed at SessionStart, UserPromptSubmit
   assert.equal(stopResult.stdout, "");
 });
 
+test("an unreadable state file allows the stop with a message", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(stateFilePath("claude", base, fixture), "{not json");
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+
+  const result = stop("compatible", base, fixture);
+  assert.equal(result.exitCode, 0);
+  assert.match(JSON.parse(result.stdout).systemMessage, /could not check/);
+});
+
+test("the hold reason lists at most ten paths", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  for (let index = 0; index < 12; index += 1) {
+    fs.writeFileSync(path.join(repository, `file-${index}.js`), "export {};\n");
+  }
+
+  const held = stop("compatible", base, fixture);
+  assert.match(JSON.parse(held.stdout).reason, /and 2 more/);
+});
+
 test("Cursor gets a follow-up message once and nothing on an aborted turn", () => {
   const repository = createRepository();
   const { fixture, base } = session("cursor", repository);
@@ -197,6 +219,22 @@ test("Cursor gets a follow-up message once and nothing on an aborted turn", () =
   const aborted = stop("cursor", base, fixture, { status: "aborted" });
   assert.deepEqual(JSON.parse(aborted.stdout), {});
   assert.equal(readGateState("cursor", base, fixture).state.outstanding, true);
+});
+
+test("a Cursor workspace root after the first is still watched", () => {
+  const first = createRepository();
+  const second = createRepository();
+  const fixture = createFixture();
+  const base = { conversation_id: "conv-roots", generation_id: "g1", workspace_roots: [first, second] };
+  handleHook({ ...base, hook_event_name: "sessionStart" }, "cursor", fixture);
+
+  const changed = path.join(second, "src.js");
+  fs.writeFileSync(changed, "export {};\n");
+  const held = stop("cursor", base, fixture);
+  assert.ok(
+    JSON.parse(held.stdout).followup_message?.includes(changed),
+    `the second root's change must be reported: ${held.stdout}`
+  );
 });
 
 test("Kiro warns on stderr with a non-blocking exit and stays quiet when clean", () => {

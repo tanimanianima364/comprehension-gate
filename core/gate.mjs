@@ -380,8 +380,19 @@ function allowResult() {
 // never fails closed at SessionStart, UserPromptSubmit, or Stop.
 function snapshotOf(input, workspace) {
   try {
-    const repository = findRepository(hookDirectory(input) ?? workspace ?? "");
-    return repository ? captureSnapshot(repository) : null;
+    const directories = hookDirectories(input);
+    const candidates = directories.length > 0 ? directories : workspace ? [workspace] : [];
+    const seen = new Set();
+    const worktrees = {};
+    for (const directory of candidates) {
+      const repository = findRepository(directory);
+      if (!repository || seen.has(repository.commonDir)) {
+        continue;
+      }
+      seen.add(repository.commonDir);
+      Object.assign(worktrees, captureSnapshot(repository).worktrees);
+    }
+    return seen.size > 0 ? { worktrees } : null;
   } catch {
     return null;
   }
@@ -468,12 +479,22 @@ function controlCommandOptions(options = {}) {
 }
 
 // Claude Code, Codex, and Kiro send cwd; Cursor sends workspace_roots.
+// hookDirectory is the one directory the workspace pin records; every root is
+// watched, so the snapshot uses hookDirectories instead.
 export function hookDirectory(input) {
   if (typeof input?.cwd === "string" && input.cwd !== "") {
     return input.cwd;
   }
   const roots = input?.workspace_roots;
   return Array.isArray(roots) && typeof roots[0] === "string" ? roots[0] : null;
+}
+
+export function hookDirectories(input) {
+  if (typeof input?.cwd === "string" && input.cwd !== "") {
+    return [input.cwd];
+  }
+  const roots = input?.workspace_roots;
+  return Array.isArray(roots) ? roots.filter(root => typeof root === "string" && root !== "") : [];
 }
 
 function normalizeHookWorkspace(value) {
