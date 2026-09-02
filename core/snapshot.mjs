@@ -17,6 +17,7 @@ import path from "node:path";
 const GIT_TIMEOUT_MS = 10_000;
 const CHUNK_BYTES = 1024 * 1024;
 const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
+const MAX_DIRECTORY_ENTRIES = 2000;
 
 function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], {
@@ -136,13 +137,21 @@ function hashOf(filePath) {
  * submodule is one entry naming a directory. Its contents are described here
  * instead, by every regular file's path, size and modification time, so a
  * second change inside it is still a change.
+ *
+ * The walk stops after MAX_DIRECTORY_ENTRIES files so a large vendored tree
+ * cannot push the hook past its timeout, which would leave the whole snapshot
+ * uncaptured and the gate inactive. Directories and their entries are visited
+ * in sorted order, so which files fall under the cap is stable; changes beyond
+ * it are not seen.
  */
 function directoryListing(directory) {
   const lines = [];
   const pending = [""];
-  while (pending.length > 0) {
-    const relativeDirectory = pending.pop();
-    for (const entry of fs.readdirSync(path.join(directory, relativeDirectory), { withFileTypes: true })) {
+  let truncated = false;
+  while (pending.length > 0 && !truncated) {
+    const relativeDirectory = pending.shift();
+    const entries = fs.readdirSync(path.join(directory, relativeDirectory), { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))) {
       const relativePath = path.join(relativeDirectory, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== ".git") {
@@ -154,11 +163,15 @@ function directoryListing(directory) {
       if (!entry.isFile()) {
         continue;
       }
+      if (lines.length >= MAX_DIRECTORY_ENTRIES) {
+        truncated = true;
+        break;
+      }
       const stat = fs.lstatSync(path.join(directory, relativePath));
       lines.push(`${relativePath}\0${stat.size}\0${stat.mtimeMs}\n`);
     }
   }
-  return lines.sort().join("");
+  return lines.sort().join("") + (truncated ? `truncated\0${lines.length}\n` : "");
 }
 
 // Read in chunks: an untracked artifact that is not gitignored can be larger

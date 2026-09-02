@@ -99,6 +99,26 @@ test("a change inside a nested repository is a difference", () => {
   assert.deepEqual(snapshotDifference(baseline, captureSnapshot(found)), [`${nested}${path.sep}`]);
 });
 
+test("the walk into a nested repository stops after two thousand files", () => {
+  const repository = createRepository();
+  const nested = path.join(repository, "vendor");
+  fs.mkdirSync(nested);
+  git(nested, ["init", "-q", "-b", "main"]);
+  for (let index = 1; index <= 2005; index += 1) {
+    fs.writeFileSync(path.join(nested, `file-${String(index).padStart(4, "0")}.txt`), "x");
+  }
+
+  const found = findRepository(repository);
+  const nestedHash = () => captureSnapshot(found).worktrees[repository].entries["vendor/"];
+  const baseline = nestedHash();
+
+  fs.writeFileSync(path.join(nested, "file-2003.txt"), "beyond the cap");
+  assert.equal(nestedHash(), baseline, "a change past the cap is not seen");
+
+  fs.writeFileSync(path.join(nested, "file-0001.txt"), "inside the cap");
+  assert.notEqual(nestedHash(), baseline);
+});
+
 test("a change in a second worktree is a difference in the same repository", () => {
   const repository = createRepository();
   const other = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-wt-")), "feature");
