@@ -57,19 +57,42 @@ function createFixture(extraEnv = {}) {
   return { env: { COMPREHENSION_GATE_STATE_DIR: directory, ...extraEnv } };
 }
 
-test("canonical read-only tool names still pass through case-insensitively", () => {
-  for (const toolName of ["Read", "Grep", "Glob"]) {
-    const result = handleHook(
+function armedControls(directory) {
+  return fs.readdirSync(directory).filter(name => name.includes(".armed."));
+}
+
+test("canonical read-only tool names arm a control case-insensitively, and only for a control target", () => {
+  for (const toolName of ["read", "GREP", "Glob"]) {
+    const fixture = createFixture();
+    const directory = fixture.env.COMPREHENSION_GATE_STATE_DIR;
+    const base = { session_id: `canonical-${toolName}` };
+    handleHook({ ...base, hook_event_name: "SessionStart", source: "startup" }, "compatible", fixture);
+
+    handleHook(
       {
-        session_id: `canonical-${toolName}`,
+        ...base,
         hook_event_name: "PreToolUse",
         tool_name: toolName,
-        tool_input: { path: "src/app.js" }
+        tool_use_id: "ordinary",
+        tool_input: { path: "README.md" }
       },
       "compatible",
-      createFixture()
+      fixture
     );
-    assert.equal(result.stdout, "", `${toolName} should be allowed while pending`);
+    assert.deepEqual(armedControls(directory), [], `${toolName}: an ordinary read arms nothing`);
+
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_use_id: "control",
+        tool_input: { path: controlTarget("pass") }
+      },
+      "compatible",
+      fixture
+    );
+    assert.equal(armedControls(directory).length, 1, `${toolName}: a control read arms the control`);
   }
 });
 

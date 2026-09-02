@@ -520,10 +520,5 @@ test("LOW bypass completes through the native read control", () => {
     fixture
   );
 
-  const shell = handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "pwd" } },
-    "compatible",
-    fixture
-  );
-  assert.equal(shell.stdout, "");
+  assert.equal(readGateState("claude", base, { env: fixture.env }).state.status, "bypassed-low");
 });
