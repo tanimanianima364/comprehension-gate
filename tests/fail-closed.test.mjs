@@ -185,23 +185,6 @@ test("a passed state without a turn id does not adopt a new turn id", () => {
   assert.equal(JSON.parse(write.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
 
-function writeTranscript(prompts) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-tx-"));
-  const file = path.join(directory, "transcript.jsonl");
-  fs.writeFileSync(file, "");
-  for (const prompt of prompts) {
-    appendHumanPrompt(file, prompt);
-  }
-  return file;
-}
-
-function appendHumanPrompt(file, prompt) {
-  fs.appendFileSync(
-    file,
-    `${JSON.stringify({ type: "user", origin: { kind: "human" }, message: { role: "user", content: prompt } })}\n`
-  );
-}
-
 function passGate(session, fixture) {
   handleHook(
     { ...session, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "pass", tool_input: { file_path: controlTarget("pass") } },
@@ -221,114 +204,6 @@ function passGate(session, fixture) {
     fixture
   );
 }
-
-test("a new human prompt in the transcript invalidates a pass when the prompt reset hook was skipped", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "stale-prompt", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "", "same turn stays passed");
-
-  appendHumanPrompt(transcript, "second request");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(
-    JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision,
-    "deny",
-    "the previous turn's pass must not cover a new prompt"
-  );
-
-  passGate(session, fixture);
-  const recovered = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(recovered.stdout, "", "the new turn can still pass through the control read");
-});
-
-test("a prompt whose transcript representation differs from the hook payload can still pass", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["<command-name>/foo</command-name>"]);
-  const session = { session_id: "prompt-shape", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "/foo" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "");
-});
-
-test("the transcript check is skipped when no transcript or turn id is available", () => {
-  const fixture = createFixture();
-  const session = { session_id: "no-transcript" };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "");
-});
-
-test("resubmitting the same prompt text starts a new turn that does not inherit the pass", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["続けて"]);
-  const session = { session_id: "same-text", transcript_path: transcript };
-
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "続けて" }, "compatible", fixture);
-  passGate(session, fixture);
-  assert.equal(
-    handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture).stdout,
-    ""
-  );
-
-  appendHumanPrompt(transcript, "続けて");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
-});
-
-test("a satisfied gate whose transcript can no longer be judged returns to pending but can pass again", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "unjudgeable", transcript_path: transcript };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "not json\n");
-  const denied = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
-
-  passGate(session, fixture);
-  const allowed = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(allowed.stdout, "", "with no judgeable transcript the re-pass must stick");
-});
 
 test("a second concurrent control completion is an idempotent no-op after the first passes", () => {
   const fixture = createFixture();
@@ -424,27 +299,6 @@ test("Claude Code prompt_id is the turn identity: a new prompt_id without a prom
     fixture
   );
   assert.equal(JSON.parse(oldTurn.stdout).hookSpecificOutput.permissionDecision, "deny", "turn A cannot reuse turn B's pass");
-});
-
-test("a pass recorded while the transcript was unjudgeable is invalidated once a newer record becomes visible", () => {
-  const fixture = createFixture();
-  const transcript = writeTranscript(["first request"]);
-  const session = { session_id: "recovered-transcript", transcript_path: transcript };
-  handleHook({ ...session, hook_event_name: "UserPromptSubmit", prompt: "first request" }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "not json\n");
-  handleHook({ ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} }, "compatible", fixture);
-  passGate(session, fixture);
-
-  fs.writeFileSync(transcript, "");
-  appendHumanPrompt(transcript, "second request");
-  const stale = handleHook(
-    { ...session, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {} },
-    "compatible",
-    fixture
-  );
-  assert.equal(JSON.parse(stale.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
 
 test("hook_event_name must match a known event exactly", () => {

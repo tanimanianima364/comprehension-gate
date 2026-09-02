@@ -2,9 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { latestHumanPrompt } from "./transcript.mjs";
 
-const STATE_VERSION = 4;
+const STATE_VERSION = 5;
 const SATISFIED = new Set(["passed", "bypassed-low"]);
 export const CONTROL_ACTIONS = new Set(["pass", "bypass-low"]);
 
@@ -68,14 +67,16 @@ export function readGateState(provider, input, options = {}) {
  */
 export function resetGate(provider, input, options = {}, overrides = {}) {
   const previous = readGateState(provider, input, options);
-  const requestSequence = previous.ok ? previous.state.requestSequence + 1 : 1;
+  const inherited = previous.ok ? previous.state : null;
   const state = {
     version: STATE_VERSION,
     status: "pending",
-    requestSequence,
+    requestSequence: inherited ? inherited.requestSequence + 1 : 1,
     turnId: getTurnId(input),
-    promptRecord: getPromptRecord(input, options),
     workspace: overrides.workspace ?? null,
+    baseline: Object.hasOwn(overrides, "baseline") ? overrides.baseline : inherited?.baseline ?? null,
+    outstanding: Object.hasOwn(overrides, "outstanding") ? overrides.outstanding : inherited?.outstanding ?? false,
+    changes: Object.hasOwn(overrides, "changes") ? overrides.changes : inherited?.changes ?? [],
     updatedAt: new Date().toISOString()
   };
 
@@ -101,7 +102,7 @@ export function ensureGateState(provider, input, options = {}) {
       // the workspace recorded by the last trusted lifecycle event.
       return resetGate(provider, input, options, { workspace: current.state.workspace });
     }
-    const state = reconcilePromptRecord(provider, input, current.state, options);
+    const state = current.state;
     if (canAdoptTurn(state, input)) {
       const adopted = {
         ...state,
@@ -190,6 +191,27 @@ export function checkGate(provider, input, options = {}) {
     reason: current.state.status,
     state: current.state
   };
+}
+
+const MAX_RECORDED_CHANGES = 50;
+
+export function recordBaseline(provider, input, baseline, options = {}) {
+  const current = requireCurrentState(provider, input, options);
+  const state = { ...current, baseline, outstanding: false, changes: [], updatedAt: new Date().toISOString() };
+  writeGateState(provider, input, state, options);
+  return state;
+}
+
+export function markOutstanding(provider, input, changes, options = {}) {
+  const current = requireCurrentState(provider, input, options);
+  const state = {
+    ...current,
+    outstanding: true,
+    changes: changes.slice(0, MAX_RECORDED_CHANGES),
+    updatedAt: new Date().toISOString()
+  };
+  writeGateState(provider, input, state, options);
+  return state;
 }
 
 function writeGateState(provider, input, state, options) {
@@ -331,49 +353,6 @@ function canAdoptTurn(state, input) {
   );
 }
 
-/*
- * Hosts without a turn id (Claude Code) rely on the prompt hook to reset the
- * gate. Each reset records the identity of the latest human prompt record in
- * the transcript; if the prompt hook was skipped or timed out, PreToolUse sees
- * a newer record and resets to pending instead of inheriting the pass.
- *
- * This is the fallback for hosts that provide no turn id at all (Claude Code
- * before prompt_id existed). Policy when the transcript cannot be judged
- * (missing, unreadable, or no recognizable prompt record): a satisfied gate
- * returns to pending, and the re-pass sticks only until a record becomes
- * judgeable again, at which point it is reset because it cannot be tied to
- * the current prompt. A pending gate with no record adopts the first record
- * it can see.
- */
-function reconcilePromptRecord(provider, input, state, options) {
-  if (state.turnId !== null || typeof input?.transcript_path !== "string" || input.transcript_path === "") {
-    return state;
-  }
-  const record = latestHumanPrompt(input.transcript_path, options.fs ?? fs);
-  if (record === state.promptRecord) {
-    return state;
-  }
-  const keepWorkspace = { workspace: state.workspace };
-  if (record === null) {
-    return SATISFIED.has(state.status) ? resetGate(provider, input, options, keepWorkspace) : state;
-  }
-  if (state.promptRecord === null && !SATISFIED.has(state.status)) {
-    const adopted = { ...state, promptRecord: record, updatedAt: new Date().toISOString() };
-    writeGateState(provider, input, adopted, options);
-    return adopted;
-  }
-  // Either a newer record, or a pass granted while nothing was judgeable:
-  // in both cases the pass cannot be tied to the current prompt.
-  return resetGate(provider, input, options, keepWorkspace);
-}
-
-function getPromptRecord(input, options) {
-  if (typeof input?.transcript_path !== "string" || input.transcript_path === "") {
-    return null;
-  }
-  return latestHumanPrompt(input.transcript_path, options.fs ?? fs);
-}
-
 function isNewerTurn(state, input) {
   const inputTurnId = getTurnId(input);
   return state.turnId !== null && inputTurnId !== null && state.turnId !== inputTurnId;
@@ -394,8 +373,10 @@ function isValidState(state) {
     Number.isInteger(state.requestSequence) &&
     state.requestSequence > 0 &&
     (state.turnId === null || typeof state.turnId === "string") &&
-    (state.promptRecord === null || typeof state.promptRecord === "string") &&
-    (state.workspace === null || typeof state.workspace === "string")
+    (state.workspace === null || typeof state.workspace === "string") &&
+    (state.baseline === null || (typeof state.baseline === "object" && typeof state.baseline.worktrees === "object")) &&
+    typeof state.outstanding === "boolean" &&
+    Array.isArray(state.changes)
   );
 }
 
