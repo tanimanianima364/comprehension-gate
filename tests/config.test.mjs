@@ -10,7 +10,7 @@ import {
   buildEntrypointCommand,
   buildPinnedEntrypointCommand
 } from "../core/command.mjs";
-import { handleHook } from "../core/gate.mjs";
+import { handleHook, renderInstructions } from "../core/gate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -30,13 +30,31 @@ test("plugin manifests and hook configurations are valid JSON", () => {
   }
 });
 
-test("shared hook config covers reset and mutation events", () => {
+test("shared hook config covers session start, prompt, control completion, and stop", () => {
   const config = readJson("hooks/hooks.json");
   assert.ok(config.hooks.SessionStart);
   assert.ok(config.hooks.UserPromptSubmit);
   assert.ok(config.hooks.PostToolUse);
+  assert.ok(config.hooks.Stop);
+  assert.equal(config.hooks.Stop[0].hooks[0].timeout, 20);
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
-  assert.equal("matcher" in config.hooks.PostToolUse[0], false);
+});
+
+test("native adapters register the stop event the way each host spells it", () => {
+  const cursor = readJson("adapters/cursor/hooks.json");
+  assert.equal(cursor.hooks.stop[0].loop_limit, 1);
+  const kiro = readJson("adapters/kiro/hooks.json");
+  assert.ok(kiro.hooks.find(hook => hook.trigger === "Stop"));
+  const kiro2 = readJson("adapters/kiro-2x/hooks.json");
+  assert.ok(kiro2.hooks.stop);
+});
+
+test("rendered instructions carry no unfilled placeholder", () => {
+  for (const provider of ["claude", "codex", "cursor", "kiro"]) {
+    const text = renderInstructions(provider, { runtime: "/usr/bin/node" });
+    assert.doesNotMatch(text, /\{\{/, provider);
+    assert.match(text, /before (you )?finish/i, provider);
+  }
 });
 
 test("native PreToolUse adapters route unknown and MCP tools", () => {

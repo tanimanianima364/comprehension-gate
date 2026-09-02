@@ -45,6 +45,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
+            "timeout": 20
+          }
+        ]
+      }
     ]
   }
 }

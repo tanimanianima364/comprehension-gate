@@ -95,7 +95,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
           recordBaseline(provider, input, snapshot, stateOptions);
         }
       }
-      return contextResult(mode, "SessionStart", renderInstructions(provider, { ...commandOptions, cwd: hookDirectory(input) }));
+      return contextResult(mode, "SessionStart", renderInstructions(provider, commandOptions));
     }
 
     if (isPromptEvent) {

@@ -25,6 +25,13 @@
         "command": "__COMPREHENSION_GATE_COMMAND__",
         "timeout": 5
       }
+    ],
+    "stop": [
+      {
+        "command": "__COMPREHENSION_GATE_COMMAND__",
+        "timeout": 20,
+        "loop_limit": 1
+      }
     ]
   }
 }

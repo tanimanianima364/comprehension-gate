@@ -23,6 +23,12 @@
         "matcher": "*",
         "command": "__COMPREHENSION_GATE_COMMAND__"
       }
+    ],
+    "stop": [
+      {
+        "matcher": "*",
+        "command": "__COMPREHENSION_GATE_COMMAND__"
+      }
     ]
   }
 }
