@@ -10,7 +10,7 @@ Any difference in the git repository that contains the working directory, in any
 
 Before writing anything, silently classify the change:
 
-- **LOW**: boilerplate, formatting, generated code, mechanical refactoring, obvious repetition, trivial CRUD, or configuration with no meaningful design choice.
+- **LOW**: boilerplate, formatting, generated code, mechanical refactoring, obvious repetition, trivial CRUD, or configuration with no meaningful design choice. A change that introduces a rule or a constraint — a validation limit, a timeout, a retry bound, a permission check — is never LOW, however small it looks.
 - **MEDIUM**: normal application logic or a moderately important implementation decision.
 - **HIGH**: architecture, concurrency, authentication or authorization, security-sensitive behavior, important state transitions, algorithms, non-obvious error handling, or data-model design.
 - **CRITICAL**: a decision whose misunderstanding could cause serious production, security, financial, or data-integrity consequences.
@@ -49,7 +49,7 @@ Do not accept bare confirmations such as “I understand,” “OK,” “yes,�
 
 ## When to write it
 
-Write the insight before you finish a turn in which the project changed, and ask the transfer question in the same turn when the level calls for one. The hook holds the end of the turn until you do.
+Write the insight before you finish a turn in which the project changed, and ask the transfer question in the same turn when the level calls for one. Where the host allows, the hook holds the end of the turn until you do; on a host that cannot hold a turn it warns instead.
 
 At MEDIUM nothing is asked of the user, so the turn ends as soon as the insight is written. At HIGH and CRITICAL your question ends the turn, and the answer arrives in the next one.
 

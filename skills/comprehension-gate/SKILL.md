@@ -9,6 +9,7 @@ Account for the current change at its level. Anchor everything in the actual cha
 
 Choose the minimum appropriate level:
 
+- **LOW — nothing:** boilerplate, formatting, generated code, mechanical refactoring, or configuration with no meaningful design choice. A change that introduces a rule or a constraint is never LOW, however small it looks.
 - **MEDIUM — Insight:** write one short insight covering the convention, pattern, constraint, or principle the change touched, whether the change followed it, extended it, or departed from it and why, and one other place the same rule applies. Ask the user nothing.
 - **HIGH — Insight + Transfer:** also ask one question about where the principle reaches beyond this change.
 - **CRITICAL — Insight + Transfer:** the same, with a harder question and no benefit of the doubt on a vague answer.
