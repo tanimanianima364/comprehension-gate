@@ -453,16 +453,16 @@ function holdReason(changes, provider, commandOptions = {}) {
     ? `run this exact pass command: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact LOW bypass command: ${controlCommand("bypass-low", commandOptions)}`
     : `read this exact pass control target with a native file-reading tool: ${controlTarget("pass")} For a genuinely LOW change only, read this exact LOW bypass target: ${controlTarget("bypass-low")}`;
   return [
-    "Comprehension Gate: the project changed during this turn and the change has not been explained.",
+    "Comprehension Gate: the project changed during this turn and the change has not been accounted for.",
     `Changed: ${listChanges(changes)}.`,
-    "Before finishing, classify the change (LOW is mechanical; MEDIUM requires Explain; HIGH requires Explain + Why + Predict; CRITICAL also requires Transfer) and ask the user to explain it at the required level in their own words.",
-    `After the user demonstrates understanding, ${controls}`,
-    "Do not revert or relocate the change to avoid the question."
+    "Before finishing, classify the change (LOW is mechanical; MEDIUM and above require a short insight about the convention or principle the change touched; HIGH and CRITICAL also require one transfer question the user answers) and produce what the level requires.",
+    `Once the level's requirement is met, ${controls}`,
+    "Do not revert or relocate the change to avoid the gate."
   ].join(" ");
 }
 
 function userNotice(changes) {
-  return `Comprehension Gate: an unexplained change remains in the project (${listChanges(changes)}). The agent should ask you to explain it before continuing.`;
+  return `Comprehension Gate: an unaccounted change remains in the project (${listChanges(changes)}). The agent should account for it before continuing.`;
 }
 
 function listChanges(changes) {
@@ -473,12 +473,12 @@ function listChanges(changes) {
 
 function promptContext(provider, state, commandOptions = {}) {
   const controls = provider === "codex"
-    ? `run this exact pass command only after the answer demonstrates understanding: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low", commandOptions)}`
-    : `read the exact pass control target with a native file-reading tool only after the answer demonstrates understanding: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
+    ? `run this exact pass command only after the level's requirement is met: ${controlCommand("pass", commandOptions)} For a genuinely LOW change only, run this exact bypass command: ${controlCommand("bypass-low", commandOptions)}`
+    : `read the exact pass control target with a native file-reading tool only after the level's requirement is met: ${controlTarget("pass")} For a genuinely LOW change only, read this exact bypass target: ${controlTarget("bypass-low")}`;
   if (state.outstanding) {
-    return `Comprehension Gate: an unexplained change from an earlier turn is outstanding (${listChanges(state.changes)}). If this message explains it, assess the explanation against the required level and ${controls} Otherwise, ask for the explanation before doing anything else.`;
+    return `Comprehension Gate: an unaccounted change from an earlier turn is outstanding (${listChanges(state.changes)}). If this message answers an outstanding transfer question, assess it against the required level and ${controls} Otherwise, satisfy the outstanding level before doing anything else.`;
   }
-  return `Comprehension Gate applies to this turn. If this message answers a gate question, assess it and ${controls} If the project changes during this turn, ask the user to explain the change before finishing.`;
+  return `Comprehension Gate applies to this turn. If this message answers a gate question, assess it and ${controls} If the project changes during this turn, account for the change at its level before finishing.`;
 }
 
 function controlCommandOptions(options = {}) {

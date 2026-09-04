@@ -54,7 +54,7 @@ test("a turn that changes nothing ends without objection", () => {
   assert.equal(result.stdout, "");
 });
 
-test("an unexplained change holds the turn once, then lets the question through", () => {
+test("an unaccounted change holds the turn once, then lets the insight through", () => {
   const repository = createRepository();
   const { fixture, base } = session("compatible", repository);
   fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
@@ -64,13 +64,13 @@ test("an unexplained change holds the turn once, then lets the question through"
   assert.equal(output.decision, "block");
   assert.match(output.reason, /src\.js/);
   assert.match(output.reason, /control\/pass/);
-  assert.match(output.systemMessage, /unexplained/i);
+  assert.match(output.systemMessage, /unaccounted/i);
   assert.equal(readGateState("claude", base, fixture).state.outstanding, true);
 
   const second = stop("compatible", base, fixture, { stop_hook_active: true });
   const secondOutput = JSON.parse(second.stdout);
   assert.equal(secondOutput.decision, undefined);
-  assert.match(secondOutput.systemMessage, /unexplained/i);
+  assert.match(secondOutput.systemMessage, /unaccounted/i);
 });
 
 test("a pass in the same turn covers the change, before or after the writes", () => {
@@ -91,7 +91,7 @@ test("a pass in the same turn covers the change, before or after the writes", ()
   assert.equal(explainedLater.stdout, "");
 });
 
-test("an outstanding change survives a new prompt until it is explained", () => {
+test("an outstanding change survives a new prompt until it is accounted for", () => {
   const repository = createRepository();
   const { fixture, base } = session("compatible", repository);
   fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
