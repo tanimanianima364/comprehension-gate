@@ -250,3 +250,115 @@ test("Kiro warns on stderr with a non-blocking exit and stays quiet when clean",
   const alias = handleHook({ ...base, hook_event_name: "agentStop" }, "kiro", fixture);
   assert.equal(alias.exitCode, 1);
 });
+
+// SessionStart re-baselines, which is right for a genuinely new session but
+// wrong for one continuing over a still-outstanding change: it reset the record
+// and took the current tree as the new baseline, so the change the gate was
+// holding simply vanished. The source does not matter to the guard, which is
+// what these cases pin; what does matter is the session id, and the case below
+// pins the limit that follows from it.
+for (const source of ["resume", "clear", "startup"]) {
+  test(`an outstanding change survives a SessionStart ${source} that keeps the session id`, () => {
+    const repository = createRepository();
+    const { fixture, base } = session("compatible", repository);
+    fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+
+    const held = stop("compatible", base, fixture);
+    assert.equal(JSON.parse(held.stdout).decision, "block");
+    const outstanding = readGateState("claude", base, fixture).state;
+    assert.equal(outstanding.outstanding, true);
+
+    handleHook({ ...base, hook_event_name: "SessionStart", source }, "compatible", fixture);
+
+    const after = readGateState("claude", base, fixture).state;
+    assert.equal(after.outstanding, true, "the record is kept");
+    assert.deepEqual(after.changes, outstanding.changes, "the changed paths are kept");
+    assert.deepEqual(after.baseline, outstanding.baseline, "the baseline is not retaken over the change");
+
+    // A control still clears it, so the only way out stays the intended one.
+    pass(base, fixture);
+    assert.equal(readGateState("claude", base, fixture).state.status, "passed");
+  });
+}
+
+test("SessionStart still re-baselines when nothing is outstanding", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+
+  // An edit the user made outside any turn is theirs, and a new session must
+  // not open by asking about it.
+  fs.writeFileSync(path.join(repository, "theirs.js"), "export {};\n");
+  handleHook({ ...base, hook_event_name: "SessionStart", source: "startup" }, "compatible", fixture);
+
+  const result = stop("compatible", base, fixture);
+  assert.equal(result.stdout, "", "the pre-existing edit is part of the new baseline");
+});
+
+// Keeping the record must not cost the rest of what SessionStart does. The
+// reset is the lifecycle boundary that adopts the new turn, advances the
+// request sequence, and discards controls armed before it; only the three
+// fields carrying the change are inherited.
+test("a SessionStart over an outstanding change is still a lifecycle boundary", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+  stop("compatible", base, fixture);
+  const before = readGateState("claude", base, fixture).state;
+  assert.equal(before.outstanding, true);
+
+  handleHook(
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t-stale", tool_input: controlInput("pass") },
+    "compatible",
+    fixture
+  );
+  handleHook({ ...base, hook_event_name: "SessionStart", source: "resume" }, "compatible", fixture);
+
+  const after = readGateState("claude", base, fixture).state;
+  assert.equal(after.outstanding, true, "the record is kept");
+  assert.deepEqual(after.changes, before.changes);
+  assert.equal(after.requestSequence > before.requestSequence, true, "the reset still ran");
+
+  handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "t-stale",
+      tool_input: controlInput("pass"),
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->\n" }
+    },
+    "compatible",
+    fixture
+  );
+  assert.equal(
+    readGateState("claude", base, fixture).state.status,
+    "pending",
+    "a control armed before the boundary does not complete after it"
+  );
+});
+
+// The limit of this fix, asserted rather than left to be discovered. State is
+// keyed by a digest of provider and session id, so the record is reachable
+// only while that id holds. A SessionStart that keeps the id -- what --resume
+// does -- is covered. A host that mints a new id lands on a different state
+// file, finds nothing, and baselines the current tree. Carrying the record
+// across that boundary needs an identity more stable than the session id,
+// which is a change to the state model rather than to this branch.
+test("a SessionStart under a new session id does not carry the record", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+  stop("compatible", base, fixture);
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, true);
+
+  const renamed = { ...base, session_id: "stop-session-after-clear" };
+  handleHook({ ...renamed, hook_event_name: "SessionStart", source: "clear" }, "compatible", fixture);
+
+  assert.equal(readGateState("claude", renamed, fixture).state.outstanding, false);
+  assert.equal(stop("compatible", renamed, fixture).stdout, "", "the change is baselined under the new id");
+  assert.equal(
+    readGateState("claude", base, fixture).state.outstanding,
+    true,
+    "the original record is orphaned, not cleared"
+  );
+});
