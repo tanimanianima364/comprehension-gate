@@ -498,6 +498,11 @@ test("native control targets contain the exact standalone markers", () => {
     ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
   ]) {
     assert.equal(fs.readFileSync(controlTarget(action), "utf8"), marker);
+    // cursorReadEvidence derives the expected byte count from the marker plus
+    // one newline, so the file must be exactly that on disk. A CRLF checkout
+    // would break every Cursor control silently; .gitattributes pins it, and
+    // this fails loudly if that pin is ever lost.
+    assert.equal(fs.statSync(controlTarget(action)).size, Buffer.byteLength(marker, "utf8"));
     assert.doesNotMatch(controlTarget(action), /(^|[\\/])node(?:\.exe)?(?:$|\s)/i);
   }
 

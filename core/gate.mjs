@@ -236,8 +236,11 @@ function cursorReadEvidence(response, action) {
   if (!Number.isInteger(length)) {
     return false;
   }
-  // The control files are written as the marker plus one newline, which the
-  // exact-marker test pins, so the expected size follows from the constant.
+  // The control files are the marker plus one newline. .gitattributes pins
+  // that newline to LF and the exact-marker test asserts the resulting byte
+  // count, so the expected size follows from the constant with no second
+  // source of truth -- and a checkout that broke the invariant fails the
+  // suite rather than silently failing every control on that host.
   return length === Buffer.byteLength(CONTROL_MARKERS[action], "utf8") + 1;
 }
 
