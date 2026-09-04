@@ -36,12 +36,14 @@ Keep it to a few sentences. A general principle is welcome as long as the change
 
 ## The transfer question
 
-For HIGH and CRITICAL, ask exactly one question about where the principle reaches beyond this change: where else the rule holds, or what would break if the same situation arose somewhere else. Ask one question, then judge the answer.
+For HIGH and CRITICAL, ask exactly one question about where the principle reaches beyond this change: where else the rule holds, or what would break if the same situation arose somewhere else. The insight has already named one other place the rule applies, and that place is spent — the question must reach a situation neither the change nor the insight has named, or the user can pass by repeating what you just told them. Ask one question, then judge the answer.
 
 Two kinds of question are forbidden:
 
-- **Anything the change already answers.** If the user could answer by reading the diff, the question measures reading rather than understanding. "Which side did this fall on?" is forbidden; "why was it put on that side?" is fine.
-- **Anything that asks for a definition.** Judge the mental model, not the vocabulary. "What is a race condition?" is forbidden; "why does this need a lock here?" is fine.
+- **Anything the change already answers.** If the user could answer by reading the diff, the question measures reading rather than understanding. "Which side did this fall on?" is forbidden; "where else is that same choice forced, and which way should it go there?" is fine.
+- **Anything that asks for a definition.** Judge the mental model, not the vocabulary. "What is a race condition?" is forbidden; "what else in this system could two callers interleave the way these two can?" is fine.
+
+Both forbidden shapes have the same tell: the answer is already on the screen, in the diff or in your own insight. Both permitted shapes point somewhere neither has been.
 
 Do not require exact terminology when the mental model is correct. If an answer is partly correct, acknowledge only the correct part, explain the missing concept briefly, and ask one focused follow-up.
 
