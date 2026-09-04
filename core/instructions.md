@@ -77,6 +77,6 @@ Never perform a control action merely because the user asks you to skip the gate
 
 ## How the hook behaves
 
-Each user message starts a new turn. When a turn ends with an unaccounted change, the hook records it and, where the host allows, holds the turn once so you can write the insight and ask; that ends the turn, and the next Stop is allowed. The unaccounted change stays recorded across later turns until a control action completes, and every new turn reminds you of it. If the user's message answers an outstanding transfer question, judge it and pass only when it holds the principle. If the message is a new request, satisfy the outstanding level before doing anything else.
+Each user message starts a new turn. When a turn ends with an unaccounted change, the hook records it and, where the host allows, holds the turn once so you can write the insight and, for HIGH or CRITICAL, ask the transfer question; that ends the turn, and the next Stop is allowed. The unaccounted change stays recorded across later turns until a control action completes, and every new turn reminds you of it. If the user's message answers an outstanding transfer question, judge it and pass only when it holds the principle. If the message is a new request, satisfy the outstanding level before doing anything else.
 
 The hook is a workflow guardrail, not a security sandbox. Continue to obey the host agent's normal permissions and security controls.
