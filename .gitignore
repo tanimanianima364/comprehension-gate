@@ -4,6 +4,6 @@ coverage/
 *.tmp
 
 # Per-developer Claude Code config. Shared project settings (.claude/settings.json,
-# committed skills or hooks) stay tracked; only the .local. files are personal.
-.claude/*.local.*
-.claude/settings.local.json
+# committed skills or hooks) stay tracked; only the .local. files are personal,
+# at any depth.
+.claude/**/*.local.*
