@@ -88,11 +88,34 @@ export function handleHook(input, mode = "compatible", options = {}) {
     if (isStartEvent) {
       const source = String(input?.source ?? "startup").toLowerCase();
       const current = readGateState(provider, input, stateOptions);
+      /*
+       * Re-baselining is right for a session that is genuinely starting, and
+       * wrong for one continuing over a change the gate is still holding: a
+       * resume or a clear would otherwise adopt that change as the new
+       * baseline and the record would vanish. Only a control clears it. This
+       * mirrors the UserPromptSubmit guard below.
+       */
+      const outstanding = current.ok && current.state?.outstanding === true;
       if (source !== "compact" || !current.ok) {
-        resetGate(provider, input, stateOptions, { ...trustedReset, baseline: null, outstanding: false, changes: [] });
-        const snapshot = snapshotOf(input, trustedReset.workspace);
-        if (snapshot) {
-          recordBaseline(provider, input, snapshot, stateOptions);
+        /*
+         * The reset still runs when a change is outstanding: it is the
+         * lifecycle boundary that adopts the new turn id and workspace,
+         * advances the request sequence, and discards armed controls left
+         * over from the previous session. Only the three fields carrying the
+         * unaccounted change are inherited instead of wiped, and the baseline
+         * is not retaken over it.
+         */
+        resetGate(
+          provider,
+          input,
+          stateOptions,
+          outstanding ? trustedReset : { ...trustedReset, baseline: null, outstanding: false, changes: [] }
+        );
+        if (!outstanding) {
+          const snapshot = snapshotOf(input, trustedReset.workspace);
+          if (snapshot) {
+            recordBaseline(provider, input, snapshot, stateOptions);
+          }
         }
       }
       return contextResult(mode, "SessionStart", renderInstructions(provider, commandOptions));
