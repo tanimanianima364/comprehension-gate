@@ -589,37 +589,40 @@ test("LOW bypass completes through the native read control", () => {
 // against is not there to find. Confirm from the path and the byte count
 // instead, or a Cursor control can never complete and the agent reports a pass
 // that did not happen.
-test("cursor completes a control from its content-free read payload", () => {
-  const target = controlTarget("pass");
-  const size = fs.statSync(target).size;
-  const cursorOutput = JSON.stringify({ file_path: target, content_length: size });
+test("cursor completes either control from its content-free read payload", () => {
+  // Both actions, because the fix claims pass and LOW bypass alike and they
+  // land on different statuses.
+  for (const [action, status] of [["pass", "passed"], ["bypass-low", "bypassed-low"]]) {
+    const target = controlTarget(action);
+    const cursorOutput = JSON.stringify({ file_path: target, content_length: fs.statSync(target).size });
 
-  assert.equal(
-    controlTransitionSucceeded({ tool_output: cursorOutput }, "cursor", "pass"),
-    true,
-    "the real Cursor read payload completes the control"
-  );
+    assert.equal(
+      controlTransitionSucceeded({ tool_output: cursorOutput }, "cursor", action),
+      true,
+      `the real Cursor read payload completes ${action}`
+    );
 
-  const fixture = createFixture();
-  const base = { conversation_id: "cursor-control", generation_id: "generation-1" };
-  handleHook({ ...base, hook_event_name: "sessionStart" }, "cursor", fixture);
-  handleHook(
-    { ...base, hook_event_name: "preToolUse", tool_name: "Read", tool_input: controlInput("pass") },
-    "cursor",
-    fixture
-  );
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "postToolUse",
-      tool_name: "Read",
-      tool_input: controlInput("pass"),
-      tool_output: cursorOutput
-    },
-    "cursor",
-    fixture
-  );
-  assert.equal(readGateState("cursor", base, { env: fixture.env }).state.status, "passed");
+    const fixture = createFixture();
+    const base = { conversation_id: `cursor-control-${action}`, generation_id: "generation-1" };
+    handleHook({ ...base, hook_event_name: "sessionStart" }, "cursor", fixture);
+    handleHook(
+      { ...base, hook_event_name: "preToolUse", tool_name: "Read", tool_input: controlInput(action) },
+      "cursor",
+      fixture
+    );
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "postToolUse",
+        tool_name: "Read",
+        tool_input: controlInput(action),
+        tool_output: cursorOutput
+      },
+      "cursor",
+      fixture
+    );
+    assert.equal(readGateState("cursor", base, { env: fixture.env }).state.status, status);
+  }
 });
 
 test("cursor read payloads that do not evidence the control target are inert", () => {
