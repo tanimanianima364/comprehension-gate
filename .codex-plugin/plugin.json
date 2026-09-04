@@ -1,6 +1,6 @@
 {
   "name": "comprehension-gate",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Require demonstrated understanding before meaningful code changes",
   "author": {
     "name": "Comprehension Gate contributors"
