@@ -498,6 +498,11 @@ test("native control targets contain the exact standalone markers", () => {
     ["bypass-low", "<!-- comprehension-gate:bypass-low -->\n"]
   ]) {
     assert.equal(fs.readFileSync(controlTarget(action), "utf8"), marker);
+    // cursorReadEvidence derives the expected byte count from the marker plus
+    // one newline, so the file must be exactly that on disk. A CRLF checkout
+    // would break every Cursor control silently; .gitattributes pins it, and
+    // this fails loudly if that pin is ever lost.
+    assert.equal(fs.statSync(controlTarget(action)).size, Buffer.byteLength(marker, "utf8"));
     assert.doesNotMatch(controlTarget(action), /(^|[\\/])node(?:\.exe)?(?:$|\s)/i);
   }
 
@@ -577,4 +582,66 @@ test("LOW bypass completes through the native read control", () => {
   );
 
   assert.equal(readGateState("claude", base, { env: fixture.env }).state.status, "bypassed-low");
+});
+
+// Cursor's postToolUse for a Read reports which file was read and how long it
+// was, but never the content, so the marker text the other hosts confirm
+// against is not there to find. Confirm from the path and the byte count
+// instead, or a Cursor control can never complete and the agent reports a pass
+// that did not happen.
+test("cursor completes either control from its content-free read payload", () => {
+  // Both actions, because the fix claims pass and LOW bypass alike and they
+  // land on different statuses.
+  for (const [action, status] of [["pass", "passed"], ["bypass-low", "bypassed-low"]]) {
+    const target = controlTarget(action);
+    const cursorOutput = JSON.stringify({ file_path: target, content_length: fs.statSync(target).size });
+
+    assert.equal(
+      controlTransitionSucceeded({ tool_output: cursorOutput }, "cursor", action),
+      true,
+      `the real Cursor read payload completes ${action}`
+    );
+
+    const fixture = createFixture();
+    const base = { conversation_id: `cursor-control-${action}`, generation_id: "generation-1" };
+    handleHook({ ...base, hook_event_name: "sessionStart" }, "cursor", fixture);
+    handleHook(
+      { ...base, hook_event_name: "preToolUse", tool_name: "Read", tool_input: controlInput(action) },
+      "cursor",
+      fixture
+    );
+    handleHook(
+      {
+        ...base,
+        hook_event_name: "postToolUse",
+        tool_name: "Read",
+        tool_input: controlInput(action),
+        tool_output: cursorOutput
+      },
+      "cursor",
+      fixture
+    );
+    assert.equal(readGateState("cursor", base, { env: fixture.env }).state.status, status);
+  }
+});
+
+test("cursor read payloads that do not evidence the control target are inert", () => {
+  const target = controlTarget("pass");
+  const size = fs.statSync(target).size;
+
+  for (const [reason, output] of [
+    ["another file of the same length", JSON.stringify({ file_path: path.join(path.dirname(target), "other"), content_length: size })],
+    ["the target at the wrong length", JSON.stringify({ file_path: target, content_length: size + 1 })],
+    ["no length at all", JSON.stringify({ file_path: target })],
+    ["the bypass target, for a pass", JSON.stringify({ file_path: controlTarget("bypass-low"), content_length: fs.statSync(controlTarget("bypass-low")).size })]
+  ]) {
+    assert.equal(controlTransitionSucceeded({ tool_output: output }, "cursor", "pass"), false, reason);
+  }
+
+  // The path evidence is Cursor's alone; it must not weaken the hosts that do
+  // return content, where the marker stays the only proof.
+  const pathOnly = JSON.stringify({ file_path: target, content_length: size });
+  for (const provider of ["claude", "kiro", "codex"]) {
+    assert.equal(controlTransitionSucceeded({ tool_output: pathOnly }, provider, "pass"), false, provider);
+  }
 });

@@ -1,0 +1,6 @@
+# The control markers are protocol data, not prose. The gate confirms a Cursor
+# read from the file's exact byte count, and the expected count is derived from
+# the marker constant plus one newline, so a CRLF checkout would silently break
+# every control on that host. Pin the line ending rather than widening what the
+# gate will accept.
+core/control/* text eol=lf
