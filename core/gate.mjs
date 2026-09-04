@@ -209,8 +209,36 @@ export function controlTransitionSucceeded(input, provider, action) {
   if (hasExplicitFailure(response)) {
     return false;
   }
+  if (provider === "cursor" && cursorReadEvidence(response, action)) {
+    return true;
+  }
 
   return responseText(response).includes(CONTROL_MARKERS[action]);
+}
+
+/*
+ * Cursor's postToolUse for a read reports which file was read and how many
+ * bytes it held, never the content, so the marker the other hosts confirm
+ * against is not in the payload to be found. What Cursor does report is exact:
+ * the path the read resolved to, and a length. Requiring both -- the control
+ * target itself, at the target's own byte count -- keeps the evidence tied to
+ * a real read of the real file, which is what the marker stood for.
+ */
+function cursorReadEvidence(response, action) {
+  const filePath = response?.file_path ?? response?.filePath ?? response?.path;
+  if (typeof filePath !== "string") {
+    return false;
+  }
+  if (path.resolve(filePath) !== path.resolve(controlTarget(action))) {
+    return false;
+  }
+  const length = response?.content_length ?? response?.contentLength;
+  if (!Number.isInteger(length)) {
+    return false;
+  }
+  // The control files are written as the marker plus one newline, which the
+  // exact-marker test pins, so the expected size follows from the constant.
+  return length === Buffer.byteLength(CONTROL_MARKERS[action], "utf8") + 1;
 }
 
 function detectProvider(mode, env) {
