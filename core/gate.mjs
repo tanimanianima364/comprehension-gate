@@ -135,8 +135,20 @@ export function handleHook(input, mode = "compatible", options = {}) {
       const action = controlActionFor(input, provider, commandOptions);
       if (action) {
         if (controlTransitionSucceeded(input, provider, action)) {
+          /*
+           * The control's completion and the baseline it retakes are one
+           * record: Stop compares against the baseline alone, so a pass
+           * saved without its baseline would hold the very change it
+           * accounted for once the snapshot works again. Take the snapshot
+           * first, and when a tracked project cannot be captured, record
+           * nothing and ask for the control again.
+           */
+          const current = readGateState(provider, input, stateOptions).state;
+          const snapshot = snapshotOf(input, current?.workspace);
+          if (!snapshot && current?.baseline) {
+            throw new GateStateError("The project could not be checked, so the control was not recorded; perform the control action again.");
+          }
           completeGateControl(provider, input, action, stateOptions);
-          const snapshot = snapshotOf(input, readGateState(provider, input, stateOptions).state?.workspace);
           if (snapshot) {
             recordBaseline(provider, input, snapshot, stateOptions);
           }

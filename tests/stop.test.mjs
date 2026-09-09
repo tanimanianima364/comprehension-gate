@@ -32,7 +32,7 @@ function pass(base, fixture, toolUseId = "t-pass") {
     "compatible",
     fixture
   );
-  handleHook(
+  return handleHook(
     {
       ...base,
       hook_event_name: "PostToolUse",
@@ -104,6 +104,36 @@ test("a write after the pass in the same turn is not covered by it", () => {
   pass(base, fixture, "t-pass-2");
   assert.equal(stop("compatible", base, fixture, { stop_hook_active: true }).stdout, "");
   assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
+});
+
+// The control's completion and the baseline it retakes must agree: a pass
+// recorded without its baseline would let Stop hold the very change the pass
+// accounted for, once the snapshot works again. So when the snapshot cannot
+// be taken at the control, the control is not recorded, and the agent is told
+// to perform it again.
+test("a control whose snapshot fails is not recorded, and a retry records it", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  const before = readGateState("claude", base, fixture).state.baseline;
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+
+  const indexPath = path.join(repository, ".git", "index");
+  const index = fs.readFileSync(indexPath);
+  fs.writeFileSync(indexPath, "garbage");
+  const failed = pass(base, fixture);
+  fs.writeFileSync(indexPath, index);
+
+  assert.match(JSON.parse(failed.stdout).hookSpecificOutput.additionalContext, /again/);
+  const state = readGateState("claude", base, fixture).state;
+  assert.equal(state.status, "pending");
+  assert.deepEqual(state.baseline, before);
+
+  const retried = pass(base, fixture, "t-pass-2");
+  assert.equal(retried.stdout, "");
+  const recorded = readGateState("claude", base, fixture).state;
+  assert.equal(recorded.status, "passed");
+  assert.equal(typeof recorded.baseline.worktrees[repository].entries["src.js"], "string");
+  assert.equal(stop("compatible", base, fixture).stdout, "");
 });
 
 // The record describes a difference from the accounted-for tree. When the
