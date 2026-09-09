@@ -26,9 +26,9 @@ function stop(mode, base, fixture, extra = {}) {
   return handleHook({ ...base, ...cursorFields, hook_event_name: event, ...extra }, mode, fixture);
 }
 
-function pass(base, fixture) {
+function pass(base, fixture, toolUseId = "t-pass") {
   handleHook(
-    { ...base, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: "t-pass", tool_input: controlInput("pass") },
+    { ...base, hook_event_name: "PreToolUse", tool_name: "Read", tool_use_id: toolUseId, tool_input: controlInput("pass") },
     "compatible",
     fixture
   );
@@ -37,7 +37,7 @@ function pass(base, fixture) {
       ...base,
       hook_event_name: "PostToolUse",
       tool_name: "Read",
-      tool_use_id: "t-pass",
+      tool_use_id: toolUseId,
       tool_input: controlInput("pass"),
       tool_response: { stdout: "<!-- comprehension-gate:pass -->\n", stderr: "", interrupted: false }
     },
@@ -73,22 +73,59 @@ test("an unaccounted change holds the turn once, then lets the insight through",
   assert.match(secondOutput.systemMessage, /unaccounted/i);
 });
 
-test("a pass in the same turn covers the change, before or after the writes", () => {
+test("a pass covers the writes made before it in the same turn", () => {
   const repository = createRepository();
   const { fixture, base } = session("compatible", repository);
-
+  fs.writeFileSync(path.join(repository, "before.js"), "export {};\n");
   pass(base, fixture);
-  fs.writeFileSync(path.join(repository, "after.js"), "export {};\n");
-  const afterPass = stop("compatible", base, fixture);
-  assert.equal(afterPass.stdout, "");
+  const explained = stop("compatible", base, fixture);
+  assert.equal(explained.stdout, "");
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
+});
+
+// A pass accounts for the tree as it stood when the control completed, which
+// is the baseline it retook. A write after it, to the same file or another,
+// is a change the insight never saw; it is not covered by the pass and holds
+// like any other unaccounted change.
+test("a write after the pass in the same turn is not covered by it", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+  pass(base, fixture);
+  fs.writeFileSync(path.join(repository, "src.js"), "export const changed = true;\n");
+
+  const held = stop("compatible", base, fixture);
+  const output = JSON.parse(held.stdout);
+  assert.equal(output.decision, "block");
+  assert.match(output.reason, /src\.js/);
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, true);
+
+  // A second control in the same turn accounts for the later write.
+  pass(base, fixture, "t-pass-2");
+  assert.equal(stop("compatible", base, fixture, { stop_hook_active: true }).stdout, "");
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
+});
+
+// The record describes a difference from the accounted-for tree. When the
+// tree is back to that state, whether the agent undid the change on request
+// or the user did, there is nothing left to account for and nothing to remind
+// the next turn about.
+test("a held change that is undone leaves no outstanding record", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  const file = path.join(repository, "README.md");
+  fs.writeFileSync(file, "# Changed\n");
+  assert.equal(JSON.parse(stop("compatible", base, fixture).stdout).decision, "block");
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, true);
+
+  fs.writeFileSync(file, "# Test\n");
+  const undone = stop("compatible", base, fixture, { stop_hook_active: true });
+  assert.equal(undone.stdout, "");
   assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
 
   const next = { ...base, prompt_id: "p2" };
-  handleHook({ ...next, hook_event_name: "UserPromptSubmit", prompt: "more" }, "compatible", fixture);
-  fs.writeFileSync(path.join(repository, "before.js"), "export {};\n");
-  pass(next, fixture);
-  const explainedLater = stop("compatible", next, fixture);
-  assert.equal(explainedLater.stdout, "");
+  const prompt = handleHook({ ...next, hook_event_name: "UserPromptSubmit", prompt: "hi" }, "compatible", fixture);
+  assert.doesNotMatch(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /outstanding/i);
 });
 
 test("an outstanding change survives a new prompt until it is accounted for", () => {

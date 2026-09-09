@@ -8,7 +8,6 @@ import {
   CONTROL_ACTIONS,
   ensureGateState,
   GateStateError,
-  checkGate,
   markOutstanding,
   readGateState,
   recordBaseline,
@@ -165,12 +164,18 @@ export function handleHook(input, mode = "compatible", options = {}) {
         recordBaseline(provider, turnInput, snapshot, stateOptions);
         return stopAllowResult(mode);
       }
+      /*
+       * A pass accounts for the tree as it stood when the control completed,
+       * which is the baseline it retook; so any difference seen here, in a
+       * turn that passed or not, is a change nothing has accounted for. And
+       * a tree that is back at the baseline has nothing outstanding, whoever
+       * undid the change: the record described a difference that is gone.
+       */
       const changes = snapshotDifference(state.baseline, snapshot);
       if (changes.length === 0) {
-        return stopAllowResult(mode);
-      }
-      if (checkGate(provider, turnInput, stateOptions).satisfied) {
-        recordBaseline(provider, turnInput, snapshot, stateOptions);
+        if (state.outstanding) {
+          recordBaseline(provider, turnInput, snapshot, stateOptions);
+        }
         return stopAllowResult(mode);
       }
       markOutstanding(provider, turnInput, changes, stateOptions);
