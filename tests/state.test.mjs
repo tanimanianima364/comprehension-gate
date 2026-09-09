@@ -109,6 +109,26 @@ function createFixture() {
   return { env: { COMPREHENSION_GATE_STATE_DIR: directory } };
 }
 
+// A finished control's record is gone, so a second completion for the same
+// tool use, or one that was never armed, is refused even though the status
+// it would set is already there: the caller retakes the baseline on a
+// completion, and only a control armed for this tool use may earn that.
+test("a completion after the pass still needs its own armed control", () => {
+  const fixture = createFixture();
+  const turn = { session_id: "session-repeat", turn_id: "turn-1" };
+  resetGate("codex", turn, fixture);
+  const first = { ...turn, tool_use_id: "tool-1" };
+  armGateControl("codex", first, "pass", fixture);
+  assert.equal(completeGateControl("codex", first, "pass", fixture).status, "passed");
+
+  assert.throws(() => completeGateControl("codex", first, "pass", fixture), GateStateError);
+  assert.throws(() => completeGateControl("codex", { ...turn, tool_use_id: "tool-9" }, "pass", fixture), GateStateError);
+
+  const second = { ...turn, tool_use_id: "tool-2" };
+  armGateControl("codex", second, "bypass-low", fixture);
+  assert.equal(completeGateControl("codex", second, "bypass-low", fixture).status, "passed", "first completion still wins the status");
+});
+
 test("concurrently armed controls do not clobber each other", () => {
   const fixture = createFixture();
   const turn = { session_id: "session-parallel", turn_id: "turn-1" };

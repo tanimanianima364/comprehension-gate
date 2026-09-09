@@ -106,6 +106,43 @@ test("a write after the pass in the same turn is not covered by it", () => {
   assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
 });
 
+// A completion is accepted once per armed control. A second PostToolUse for
+// a control that already completed, delivered again or replayed, has no armed
+// record behind it, so it must not retake the baseline over writes made since
+// the real completion; only a newly armed control accounts for those.
+test("a repeated completion of a finished control does not retake the baseline", () => {
+  const repository = createRepository();
+  const { fixture, base } = session("compatible", repository);
+  fs.writeFileSync(path.join(repository, "a.js"), "export {};\n");
+  pass(base, fixture, "t-first");
+  const accounted = readGateState("claude", base, fixture).state.baseline;
+
+  fs.writeFileSync(path.join(repository, "b.js"), "export {};\n");
+  assert.equal(JSON.parse(stop("compatible", base, fixture).stdout).decision, "block");
+
+  const repeated = handleHook(
+    {
+      ...base,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "t-first",
+      tool_input: controlInput("pass"),
+      tool_response: { stdout: "<!-- comprehension-gate:pass -->\n", stderr: "", interrupted: false }
+    },
+    "compatible",
+    fixture
+  );
+  assert.match(JSON.parse(repeated.stdout).hookSpecificOutput.additionalContext, /not armed/);
+  const state = readGateState("claude", base, fixture).state;
+  assert.deepEqual(state.baseline, accounted, "the baseline stays at the accounted-for tree");
+  assert.equal(state.outstanding, true);
+  assert.match(JSON.parse(stop("compatible", base, fixture, { stop_hook_active: true }).stdout).systemMessage, /b\.js/);
+
+  pass(base, fixture, "t-second");
+  assert.equal(readGateState("claude", base, fixture).state.outstanding, false);
+  assert.equal(stop("compatible", base, fixture, { stop_hook_active: true }).stdout, "");
+});
+
 // The control's completion and the baseline it retakes must agree: a pass
 // recorded without its baseline would let Stop hold the very change the pass
 // accounted for, once the snapshot works again. So when the snapshot cannot

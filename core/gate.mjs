@@ -217,7 +217,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "PostToolUse",
-        `Comprehension Gate failed to record the control transition. ${detail} The gate remains pending; do not modify the project.`
+        `Comprehension Gate failed to record the control transition. ${detail} The gate state is unchanged.`
       );
     }
     if (isStopEvent) {

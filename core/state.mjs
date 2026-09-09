@@ -142,13 +142,19 @@ export function completeGateControl(provider, input, action, options = {}) {
   assertControlAction(action);
   const current = requireCurrentState(provider, input, options);
   const armedPath = armedControlPath(provider, input, action, options);
-  if (SATISFIED.has(current.status)) {
-    // First completion wins; a parallel control that also succeeded is a no-op.
-    safeUnlink(options.fs ?? fs, armedPath);
-    return current;
-  }
+  /*
+   * Every completion needs its own armed control, whatever the status: the
+   * caller retakes the baseline on a completion, and a record that already
+   * completed, delivered again, would otherwise retake it over writes made
+   * since. Among controls armed in parallel the first completion wins the
+   * status; a later one is accepted and changes nothing but its record.
+   */
   if (!matchesArmedControl(readArmedControl(armedPath, options), current, input, action)) {
     throw new GateStateError("Control command was not armed for this tool use.");
+  }
+  if (SATISFIED.has(current.status)) {
+    safeUnlink(options.fs ?? fs, armedPath);
+    return current;
   }
 
   const status = action === "pass" ? "passed" : "bypassed-low";
