@@ -8,7 +8,6 @@ import {
   CONTROL_ACTIONS,
   ensureGateState,
   GateStateError,
-  checkGate,
   markOutstanding,
   readGateState,
   recordBaseline,
@@ -136,8 +135,20 @@ export function handleHook(input, mode = "compatible", options = {}) {
       const action = controlActionFor(input, provider, commandOptions);
       if (action) {
         if (controlTransitionSucceeded(input, provider, action)) {
+          /*
+           * The control's completion and the baseline it retakes are one
+           * record: Stop compares against the baseline alone, so a pass
+           * saved without its baseline would hold the very change it
+           * accounted for once the snapshot works again. Take the snapshot
+           * first, and when a tracked project cannot be captured, record
+           * nothing and ask for the control again.
+           */
+          const current = readGateState(provider, input, stateOptions).state;
+          const snapshot = snapshotOf(input, current?.workspace);
+          if (!snapshot && current?.baseline) {
+            throw new GateStateError("The project could not be checked, so the control was not recorded; perform the control action again.");
+          }
           completeGateControl(provider, input, action, stateOptions);
-          const snapshot = snapshotOf(input, readGateState(provider, input, stateOptions).state?.workspace);
           if (snapshot) {
             recordBaseline(provider, input, snapshot, stateOptions);
           }
@@ -165,12 +176,18 @@ export function handleHook(input, mode = "compatible", options = {}) {
         recordBaseline(provider, turnInput, snapshot, stateOptions);
         return stopAllowResult(mode);
       }
+      /*
+       * A pass accounts for the tree as it stood when the control completed,
+       * which is the baseline it retook; so any difference seen here, in a
+       * turn that passed or not, is a change nothing has accounted for. And
+       * a tree that is back at the baseline has nothing outstanding, whoever
+       * undid the change: the record described a difference that is gone.
+       */
       const changes = snapshotDifference(state.baseline, snapshot);
       if (changes.length === 0) {
-        return stopAllowResult(mode);
-      }
-      if (checkGate(provider, turnInput, stateOptions).satisfied) {
-        recordBaseline(provider, turnInput, snapshot, stateOptions);
+        if (state.outstanding) {
+          recordBaseline(provider, turnInput, snapshot, stateOptions);
+        }
         return stopAllowResult(mode);
       }
       markOutstanding(provider, turnInput, changes, stateOptions);
@@ -200,7 +217,7 @@ export function handleHook(input, mode = "compatible", options = {}) {
       return contextResult(
         mode,
         "PostToolUse",
-        `Comprehension Gate failed to record the control transition. ${detail} The gate remains pending; do not modify the project.`
+        `Comprehension Gate failed to record the control transition. ${detail} The gate state is unchanged.`
       );
     }
     if (isStopEvent) {
