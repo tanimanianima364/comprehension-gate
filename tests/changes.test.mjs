@@ -41,7 +41,7 @@ function commit(repository, message) {
 }
 
 test("a directory outside any repository has no change set", () => {
-  assert.equal(changedPaths(fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "not-a-repo-"))), null);
+  assert.equal(changedPaths(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "not-a-repo-"))), null);
   assert.equal(changedPaths("relative/path"), null);
 });
 
@@ -125,7 +125,7 @@ test("a rename is named in full whether it is staged or not", () => {
  */
 test("a dangling origin/HEAD falls through to a base that exists", () => {
   const upstream = createRepository();
-  const repository = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "clone-")));
+  const repository = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clone-")));
   git(path.dirname(repository), ["clone", "-q", upstream, repository]);
   git(repository, ["config", "user.email", "test@example.com"]);
   git(repository, ["config", "user.name", "Test"]);
@@ -166,7 +166,7 @@ test("a repository with no remote compares against the local default branch", ()
 
 test("a branch cut from the remote default branch compares against it", () => {
   const upstream = createRepository();
-  const repository = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "clone-")));
+  const repository = fs.realpathSync(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "clone-")));
   git(path.dirname(repository), ["clone", "-q", upstream, repository]);
   git(repository, ["config", "user.email", "test@example.com"]);
   git(repository, ["config", "user.name", "Test"]);
@@ -209,8 +209,12 @@ test("the command the skill runs reports exactly what the hook reports", () => {
 });
 
 test("the change set command says nothing outside a repository and never fails", () => {
-  const directory = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "not-a-repo-"));
-  assert.deepEqual(changeSetCommandOutput(directory), { paths: [], complete: false, reason: "not a git repository, or git could not be asked" });
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "not-a-repo-"));
+  assert.deepEqual(changeSetCommandOutput(directory), {
+    paths: [],
+    complete: false,
+    reason: "not a git repository, or git could not be asked"
+  });
 });
 
 test("the rendered instructions carry the change set command the skill is told to use", () => {
@@ -252,13 +256,11 @@ test("a plugin path containing a replacement pattern survives substitution", () 
 });
 
 /*
- * The POSIX form has to survive a real shell, and PowerShell needs the call
- * operator before a quoted executable or it treats the line as a string. This
- * runs the first for real; the second is asserted by shape, because no
- * PowerShell is available here to run it against.
+ * The rendered command has to survive a real shell, from a directory whose
+ * name holds the characters that would otherwise end its quoting.
  */
-test("the rendered command runs in a POSIX shell and is spelled for PowerShell too", () => {
-  const sandbox = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "gate-quote-"));
+test("the rendered command runs in a POSIX shell", () => {
+  const sandbox = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "gate-quote-"));
   const awkward = path.join(sandbox, "plug in's dir");
   fs.mkdirSync(awkward, { recursive: true });
   fs.cpSync(path.join(path.dirname(CHANGES_ENTRYPOINT)), path.join(awkward, "core"), {
@@ -268,24 +270,12 @@ test("the rendered command runs in a POSIX shell and is spelled for PowerShell t
   write(repository, "src.js", "export {};\n");
 
   const text = renderInstructions({ changes: path.join(awkward, "core", "changes.mjs") });
-  const posix = text.match(/^POSIX shell: (.+)$/m)[1];
-  const powershell = text.match(/^PowerShell: (.+)$/m)[1];
-
-  const run = spawnSync(posix, { cwd: repository, encoding: "utf8", shell: "/bin/sh" });
+  const command = text.match(/^'.+' '.+'$/m)[0];
+  const run = spawnSync(command, { cwd: repository, encoding: "utf8", shell: "/bin/sh" });
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(run.stdout).paths, ["src.js"]);
-
-  assert.ok(powershell.startsWith("& "), powershell);
-  assert.ok(powershell.includes("plug in''s dir"), "PowerShell doubles a single quote to escape it");
 });
 
-/*
- * Node kills git and throws once its output passes maxBuffer, whose default is
- * a megabyte -- about six thousand paths. Collected together, exceeding it on
- * the committed half took the working tree with it and the change set came
- * back empty with nothing reported at all. The halves are collected
- * separately now, and a short list says it is short.
- */
 test("a committed half too large to collect still leaves the working tree reported", () => {
   const repository = createRepository();
   git(repository, ["checkout", "-q", "-b", "feature"]);
@@ -308,25 +298,6 @@ test("a repository git cannot read at all still has no change set", () => {
   const repository = createRepository();
   write(repository, "src.js", "export {};\n");
   assert.equal(changedPaths(repository, { maxBuffer: 1 }), null);
-});
-
-/*
- * PowerShell recognizes four more characters as single quotes than the ASCII
- * one, and any of them ends a single-quoted string. A plugin under a directory
- * named with a typographic apostrophe would terminate its own argument.
- */
-test("every character PowerShell reads as a single quote is escaped", () => {
-  const text = renderInstructions({
-    runtime: "/usr/bin/node",
-    changes: "/home/O\u2019Connor/it\u2018s/\u201aodd\u201b/core/changes.mjs"
-  });
-  const powershell = text.match(/^PowerShell: (.+)$/m)[1];
-  assert.ok(powershell.includes("O\u2019\u2019Connor"), powershell);
-  assert.ok(powershell.includes("it\u2018\u2018s"), powershell);
-  assert.ok(powershell.includes("\u201a\u201aodd\u201b\u201b"), powershell);
-
-  const posix = text.match(/^POSIX shell: (.+)$/m)[1];
-  assert.ok(posix.includes("O\u2019Connor"), "a POSIX shell reads only the ASCII quote");
 });
 
 /*

@@ -57,11 +57,10 @@ const PATCH_MOVE = /^\*\*\* Move to: (.+)$/;
  * one-liner that would disagree with the hook about renames and about a
  * repository with no remote.
  *
- * It is spelled for two shells because quoting is not portable: PowerShell
- * needs the call operator before a quoted executable or it reads the line as a
- * string, and it escapes a single quote by doubling it where a POSIX shell
- * closes and reopens the quoting. A plugin installed under a directory with a
- * space or a quote in its name must run on both.
+ * Both paths are single-quoted, POSIX style: a plugin installed under a
+ * directory with a space or a quote in its name must not turn into shell
+ * syntax. Only a POSIX shell is spelled for -- see the README on why Windows
+ * is out of scope.
  *
  * The substitution goes through a function rather than a replacement string:
  * `$&` and friends in a replacement string are patterns, not text, so a plugin
@@ -70,30 +69,15 @@ const PATCH_MOVE = /^\*\*\* Move to: (.+)$/;
 export function renderInstructions(options = {}) {
   const runtime = options.runtime ?? process.execPath;
   const entrypoint = options.changes ?? CHANGES_PATH;
-  const command = [
-    `POSIX shell: ${posixQuote(runtime)} ${posixQuote(entrypoint)}`,
-    `PowerShell: & ${powerShellQuote(runtime)} ${powerShellQuote(entrypoint)}`
-  ].join("\n");
+  const command = `${quote(runtime)} ${quote(entrypoint)}`;
   return fs
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
     .replaceAll("{{CHANGE_SET_COMMAND}}", () => command);
 }
 
 // POSIX single-quoting keeps every byte of a path literal.
-function posixQuote(value) {
+function quote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-/*
- * PowerShell single-quoting is literal too, and doubles a quote to escape it --
- * but it recognizes four more characters as single quotes than the ASCII one,
- * and any of them ends the string. A plugin under a directory named with a
- * typographic apostrophe would otherwise terminate its own argument.
- */
-const POWERSHELL_QUOTES = /['\u2018\u2019\u201a\u201b]/g;
-
-function powerShellQuote(value) {
-  return `'${value.replaceAll(POWERSHELL_QUOTES, match => match + match)}'`;
 }
 
 export function handleHook(input) {
@@ -328,7 +312,7 @@ function insideRepository(root, absolute) {
   if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return null;
   }
-  return relative.split(path.sep).join("/");
+  return relative;
 }
 
 // The nearest existing ancestor, so a directory that does not exist yet -- one

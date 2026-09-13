@@ -12,7 +12,7 @@ Work normally as a coding agent. The purpose of this gate is to leave behind wha
 
 Everything this branch has done that its base branch has not: every path committed since the merge base with the default branch, and every path `git status` reports in the working tree. This is the same set a reviewer sees in the pull request. Ignored files never count, so a scratch file under a gitignored directory is free.
 
-To print it at any moment, run the line for your shell from inside the repository. It answers with JSON — `{ "paths": [...], "complete": true }` — because a path may itself contain a newline, and because a list that is short of something has to be able to say so:
+To print it at any moment, run this command from inside the repository. It answers with JSON — `{ "paths": [...], "complete": true }` — because a path may itself contain a newline, and because a list that is short of something has to be able to say so:
 
 ```text
 {{CHANGE_SET_COMMAND}}
