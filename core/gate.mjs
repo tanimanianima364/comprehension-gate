@@ -26,21 +26,38 @@ const MAX_LISTED_PATHS = 10;
  * The instructions carry the exact command that prints the change set, so the
  * manual skill runs this plugin's own code instead of a hand-written git
  * one-liner that would disagree with the hook about renames and about a
- * repository with no remote. Both paths are single-quoted: a plugin installed
- * under a directory with a space or a quote in it must not turn into shell
- * syntax.
+ * repository with no remote.
+ *
+ * It is spelled for two shells because quoting is not portable: PowerShell
+ * needs the call operator before a quoted executable or it reads the line as a
+ * string, and it escapes a single quote by doubling it where a POSIX shell
+ * closes and reopens the quoting. A plugin installed under a directory with a
+ * space or a quote in its name must run on both.
+ *
+ * The substitution goes through a function rather than a replacement string:
+ * `$&` and friends in a replacement string are patterns, not text, so a plugin
+ * path containing them would have the placeholder spliced back into itself.
  */
 export function renderInstructions(options = {}) {
   const runtime = options.runtime ?? process.execPath;
   const entrypoint = options.changes ?? CHANGES_PATH;
+  const command = [
+    `POSIX shell: ${posixQuote(runtime)} ${posixQuote(entrypoint)}`,
+    `PowerShell: & ${powerShellQuote(runtime)} ${powerShellQuote(entrypoint)}`
+  ].join("\n");
   return fs
     .readFileSync(INSTRUCTIONS_PATH, "utf8")
-    .replaceAll("{{CHANGE_SET_COMMAND}}", `${quote(runtime)} ${quote(entrypoint)}`);
+    .replaceAll("{{CHANGE_SET_COMMAND}}", () => command);
 }
 
 // POSIX single-quoting keeps every byte of a path literal.
-function quote(value) {
+function posixQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+// PowerShell single-quoting is literal too, and doubles a quote to escape it.
+function powerShellQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 export function handleHook(input, mode = "compatible") {
@@ -102,10 +119,23 @@ function changeNotice(input) {
   ].join(" ");
 }
 
+/*
+ * Paths are quoted rather than run together with commas. A path is
+ * repository-controlled text: it may contain a newline, a quote, or something
+ * shaped like an instruction, and the reminder is prose injected into an
+ * agent's context. Quoting bounds each one and escapes what would otherwise
+ * become a line of its own.
+ */
 function listPaths(paths) {
-  const shown = paths.slice(0, MAX_LISTED_PATHS);
+  const shown = paths.slice(0, MAX_LISTED_PATHS).map(displayPath);
   const more = paths.length - shown.length;
   return shown.join(", ") + (more > 0 ? `, and ${more} more` : "");
+}
+
+// JSON escapes quotes, backslashes and control characters; the two Unicode
+// line separators are legal inside a JSON string, so they are escaped here.
+function displayPath(value) {
+  return JSON.stringify(value).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 }
 
 // Exact, case-insensitive match only; stripping characters would let

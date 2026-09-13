@@ -6,7 +6,7 @@ Work normally as a coding agent. The purpose of this gate is to ensure that a ch
 
 Everything this branch has done that its base branch has not: every path committed since the merge base with the default branch, and every path `git status` reports in the working tree. This is the same set a reviewer sees in the pull request. Ignored files never count, so a scratch file under a gitignored directory is free.
 
-To print it at any moment, run exactly this command from inside the repository:
+To print it at any moment, run the line for your shell from inside the repository. It answers with a JSON array of paths, because a path may itself contain a newline:
 
 ```text
 {{CHANGE_SET_COMMAND}}

@@ -145,7 +145,10 @@ function splitFields(output) {
 }
 
 /*
- * The same change set, on stdout, one path per line. The manual skill runs
+ * The same change set, on stdout, as a JSON array rather than one path per
+ * line: a path may contain a newline and git hands it over verbatim, so joined
+ * by newlines the single file "alpha\nbeta.js" and the two files "alpha" and
+ * "beta.js" are the same bytes and the reader loses what changed. The manual skill runs
  * this rather than carrying its own git one-liner: a hand-written
  * `merge-base HEAD origin/HEAD` resolves nothing in a repository with no
  * remote and drops a rename's original path, so the two would disagree about
@@ -153,10 +156,7 @@ function splitFields(output) {
  */
 export async function main() {
   const changes = changedPaths(process.cwd());
-  if (changes === null || changes.paths.length === 0) {
-    return;
-  }
-  process.stdout.write(`${changes.paths.join("\n")}\n`);
+  process.stdout.write(`${JSON.stringify(changes === null ? [] : changes.paths, null, 2)}\n`);
 }
 
 if (isMainModule(process.argv[1])) {

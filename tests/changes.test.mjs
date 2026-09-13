@@ -21,7 +21,7 @@ function changeSetCommandOutput(repository) {
     encoding: "utf8"
   });
   assert.equal(result.status, 0, result.stderr);
-  return result.stdout.split("\n").filter(line => line !== "");
+  return JSON.parse(result.stdout);
 }
 
 function write(repository, relativePath, contents) {
@@ -216,3 +216,59 @@ test("the rendered instructions carry the change set command the skill is told t
 function escapeForRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/*
+ * A path may contain a newline, and git's -z output hands it over verbatim.
+ * Joining such paths with newlines makes one file called "alpha\nbeta.js"
+ * indistinguishable from the two files "alpha" and "beta.js", so the reader
+ * loses the identity of what changed exactly where it matters most.
+ */
+test("a newline inside a path does not turn one file into two", () => {
+  const repository = createRepository();
+  write(repository, "alpha\nbeta.js", "export {};\n");
+  write(repository, "plain.js", "export {};\n");
+
+  assert.deepEqual(changedPaths(repository).paths, ["alpha\nbeta.js", "plain.js"]);
+  assert.deepEqual(changeSetCommandOutput(repository), ["alpha\nbeta.js", "plain.js"]);
+});
+
+/*
+ * The command is substituted into the instructions, and a replacement string
+ * is not literal text: `$&` in it expands to whatever the pattern matched. A
+ * plugin installed under a directory named with those two characters would
+ * have its own placeholder spliced back into the path it was replacing.
+ */
+test("a plugin path containing a replacement pattern survives substitution", () => {
+  const entrypoint = "/plugins/gate-$&-$$-$`/core/changes.mjs";
+  const text = renderInstructions({ runtime: "/usr/bin/node", changes: entrypoint });
+  assert.ok(text.includes(entrypoint), text.match(/^.*changes\.mjs.*$/m)?.[0]);
+  assert.doesNotMatch(text, /CHANGE_SET_COMMAND/);
+});
+
+/*
+ * The POSIX form has to survive a real shell, and PowerShell needs the call
+ * operator before a quoted executable or it treats the line as a string. This
+ * runs the first for real; the second is asserted by shape, because no
+ * PowerShell is available here to run it against.
+ */
+test("the rendered command runs in a POSIX shell and is spelled for PowerShell too", () => {
+  const sandbox = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "gate-quote-"));
+  const awkward = path.join(sandbox, "plug in's dir");
+  fs.mkdirSync(awkward, { recursive: true });
+  fs.cpSync(path.join(path.dirname(CHANGES_ENTRYPOINT)), path.join(awkward, "core"), {
+    recursive: true
+  });
+  const repository = createRepository();
+  write(repository, "src.js", "export {};\n");
+
+  const text = renderInstructions({ changes: path.join(awkward, "core", "changes.mjs") });
+  const posix = text.match(/^POSIX shell: (.+)$/m)[1];
+  const powershell = text.match(/^PowerShell: (.+)$/m)[1];
+
+  const run = spawnSync(posix, { cwd: repository, encoding: "utf8", shell: "/bin/sh" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), ["src.js"]);
+
+  assert.ok(powershell.startsWith("& "), powershell);
+  assert.ok(powershell.includes("plug in''s dir"), "PowerShell doubles a single quote to escape it");
+});
