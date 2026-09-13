@@ -24,6 +24,17 @@ const CHANGES_PATH = path.join(path.dirname(SCRIPT_PATH), "changes.mjs");
 const MAX_LISTED_PATHS = 10;
 const INCOMPLETE_NOTICE =
   "Comprehension Gate: part of the change set could not be collected, so nothing can be said about what it holds. Treat the branch as having changes that are not listed rather than as unchanged.";
+// "stop" is no longer registered -- it had nothing left to do once the hosts
+// that could only be warned there were dropped -- but an installed copy that
+// still carries the old configuration must be answered rather than told its
+// event is unrecognized.
+const KNOWN_EVENTS = new Set([
+  "sessionstart",
+  "userpromptsubmit",
+  "pretooluse",
+  "posttooluse",
+  "stop"
+]);
 /*
  * Whether a tool reads or writes a file, guessed from its name. A name proves
  * nothing across hosts, which is why the old control protocol refused to trust
@@ -85,44 +96,39 @@ function powerShellQuote(value) {
   return `'${value.replaceAll(POWERSHELL_QUOTES, match => match + match)}'`;
 }
 
-export function handleHook(input, mode = "compatible") {
+export function handleHook(input) {
   const event = normalizeEvent(input?.hook_event_name);
-  const isPromptEvent = event === "userpromptsubmit" || event === "beforesubmitprompt";
-  const isStartEvent = event === "sessionstart" || (mode === "kiro" && event === "agentspawn");
-  const isStopEvent = event === "stop" || event === "agentstop";
 
-  if (!isStartEvent && !isPromptEvent && !isStopEvent && event !== "posttooluse" && event !== "pretooluse") {
+  if (!KNOWN_EVENTS.has(event)) {
     return nonBlockingErrorResult(
       `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}).`
     );
   }
 
-  if (isStartEvent) {
+  if (event === "sessionstart") {
     const notice = changeNotice(input);
-    const context = notice === null ? renderInstructions() : `${renderInstructions()}\n${notice}`;
-    return contextResult(mode, "SessionStart", context);
+    return contextResult(
+      "SessionStart",
+      notice === null ? renderInstructions() : `${renderInstructions()}\n${notice}`
+    );
   }
 
-  if (isPromptEvent) {
+  if (event === "userpromptsubmit") {
     const notice = changeNotice(input);
-    return notice === null
-      ? quietResult(mode, "UserPromptSubmit")
-      : contextResult(mode, "UserPromptSubmit", notice);
+    return notice === null ? allowResult() : contextResult("UserPromptSubmit", notice);
   }
 
   if (event === "posttooluse") {
-    const notice = uncoveredNotice(input, mode);
-    return notice === null
-      ? toolAllowResult(mode, "PostToolUse")
-      : contextResult(mode, "PostToolUse", notice);
+    const notice = uncoveredNotice(input);
+    return notice === null ? allowResult() : contextResult("PostToolUse", notice);
   }
 
-  if (isStopEvent) {
-    return stopAllowResult(mode);
+  if (event === "stop") {
+    return allowResult();
   }
 
-  const hint = recordedIntent(input, mode);
-  return hint === null ? toolAllowResult(mode, "PreToolUse") : contextResult(mode, "PreToolUse", hint);
+  const hint = recordedIntent(input);
+  return hint === null ? allowResult() : contextResult("PreToolUse", hint);
 }
 
 // Unparseable stdin means the event type is unknown too, so no event-specific
@@ -186,10 +192,7 @@ function changeNotice(input) {
  * schema has not been verified to carry context, so an unrecognized field
  * there risks failing every tool call rather than adding a hint.
  */
-function recordedIntent(input, mode) {
-  if (mode === "cursor") {
-    return null;
-  }
+function recordedIntent(input) {
   const target = toolTargets(input, READING_TOOL);
   if (target === null) {
     return null;
@@ -219,8 +222,8 @@ function recordedIntent(input, mode) {
  * write to the notes tree spends it too, since that is exactly when the
  * remaining list has changed.
  */
-function uncoveredNotice(input, mode) {
-  if (mode === "cursor" || toolTargets(input, null) === null) {
+function uncoveredNotice(input) {
+  if (toolTargets(input, null) === null) {
     return null;
   }
   return changeNotice(input);
@@ -267,24 +270,15 @@ function toolTargets(input, alsoRead) {
 }
 
 /*
- * Every path a tool payload names. Kiro nests them in a list of operations,
- * and Codex sends a patch envelope as a command string -- which is read here
- * as the structured format it is, by its own `*** ... File:` headers, and
- * never as a shell command to be parsed.
+ * Every path a tool payload names. Codex sends a patch envelope as a command
+ * string, which is read here as the structured format it is, by its own
+ * `*** ... File:` headers, and never as a shell command to be parsed.
  */
 function toolPaths(toolInput) {
   const paths = [];
   for (const key of TOOL_PATH_KEYS) {
     if (typeof toolInput?.[key] === "string" && toolInput[key] !== "") {
       paths.push(toolInput[key]);
-    }
-  }
-  const operations = toolInput?.operations;
-  if (Array.isArray(operations)) {
-    for (const operation of operations) {
-      if (typeof operation?.path === "string" && operation.path !== "") {
-        paths.push(operation.path);
-      }
     }
   }
   for (const key of PATCH_TEXT_KEYS) {
@@ -377,24 +371,7 @@ function normalizeEvent(event) {
   return String(event ?? "").toLowerCase();
 }
 
-function contextResult(mode, eventName, context) {
-  if (mode === "kiro") {
-    return { exitCode: 0, stdout: `${context}\n`, stderr: "" };
-  }
-  if (mode === "cursor") {
-    if (eventName === "UserPromptSubmit") {
-      return {
-        exitCode: 0,
-        stdout: `${JSON.stringify({ continue: true })}\n`,
-        stderr: ""
-      };
-    }
-    return {
-      exitCode: 0,
-      stdout: `${JSON.stringify({ additional_context: context })}\n`,
-      stderr: ""
-    };
-  }
+function contextResult(eventName, context) {
   return {
     exitCode: 0,
     stdout: `${JSON.stringify({
@@ -407,15 +384,6 @@ function contextResult(mode, eventName, context) {
   };
 }
 
-// Cursor reads an empty stdout as a hook failure, so a turn with nothing to
-// say still has to answer it in the shape that event expects.
-function quietResult(mode, eventName) {
-  if (mode === "cursor" && eventName === "UserPromptSubmit") {
-    return { exitCode: 0, stdout: `${JSON.stringify({ continue: true })}\n`, stderr: "" };
-  }
-  return allowResult();
-}
-
 function nonBlockingErrorResult(reason) {
   return { exitCode: 1, stdout: "", stderr: `${reason}\n` };
 }
@@ -424,33 +392,12 @@ function allowResult() {
   return { exitCode: 0, stdout: "", stderr: "" };
 }
 
-// Cursor's preToolUse is registered failClosed, so an allow must be spelled out there.
-function toolAllowResult(mode, eventName) {
-  if (mode !== "cursor") {
-    return allowResult();
-  }
-  const output = eventName === "PreToolUse" ? { permission: "allow" } : {};
-  return { exitCode: 0, stdout: `${JSON.stringify(output)}\n`, stderr: "" };
-}
-
-function stopAllowResult(mode) {
-  return mode === "cursor" ? { exitCode: 0, stdout: "{}\n", stderr: "" } : allowResult();
-}
-
-// Claude Code, Codex, and Kiro send cwd; Cursor sends workspace_roots. Only
-// the first root is watched: the branch a note belongs to is the one being
-// worked in, and a second repository has its own notes.
+// Both supported hosts send cwd.
 export function hookDirectory(input) {
-  if (typeof input?.cwd === "string" && input.cwd !== "") {
-    return input.cwd;
-  }
-  const roots = input?.workspace_roots;
-  return Array.isArray(roots) && typeof roots[0] === "string" ? roots[0] : null;
+  return typeof input?.cwd === "string" && input.cwd !== "" ? input.cwd : null;
 }
 
 export async function main() {
-  const [mode = "compatible"] = process.argv.slice(2);
-
   /*
    * Collected as bytes and decoded once. Appending each chunk to a string
    * decodes that chunk on its own, so a character straddling a read boundary
@@ -463,7 +410,7 @@ export async function main() {
 
   let result;
   try {
-    result = handleHook(JSON.parse(Buffer.concat(chunks).toString("utf8")), mode);
+    result = handleHook(JSON.parse(Buffer.concat(chunks).toString("utf8")));
   } catch {
     result = malformedInputResult();
   }

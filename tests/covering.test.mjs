@@ -82,9 +82,7 @@ test("an edit to a covered path carries its notes into the tool call", () => {
         hook_event_name: "PreToolUse",
         tool_name: "Edit",
         tool_input: { file_path: path.join(repository, "src/app.js") }
-      },
-      "compatible"
-    ).stdout
+      }).stdout
   ).hookSpecificOutput.additionalContext;
 
   assert.match(context, /src\/app\.js/);
@@ -98,15 +96,13 @@ test("an edit to a path no note covers passes through untouched", () => {
   for (const toolInput of [{ file_path: path.join(repository, "src/app.js") }, { command: "sed -i s/a/b/ src/app.js" }]) {
     assert.deepEqual(
       handleHook(
-        { cwd: repository, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: toolInput },
-        "compatible"
-      ),
+        { cwd: repository, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: toolInput }),
       { exitCode: 0, stdout: "", stderr: "" }
     );
   }
 });
 
-test("a relative tool path and Kiro's operations list both resolve", () => {
+test("a relative tool path resolves against the working directory", () => {
   const repository = createRepository();
   writeNote(repository, "2026-09-13-one-a1b2c3d4", ["src/app.js"]);
 
@@ -116,38 +112,9 @@ test("a relative tool path and Kiro's operations list both resolve", () => {
       hook_event_name: "PreToolUse",
       tool_name: "Write",
       tool_input: { file_path: "src/app.js" }
-    },
-    "compatible"
-  );
+    });
   assert.match(relative.stdout, /2026-09-13-one-a1b2c3d4\.md/);
 
-  const kiro = handleHook(
-    {
-      cwd: repository,
-      hook_event_name: "preToolUse",
-      tool_name: "fs_write",
-      tool_input: { operations: [{ path: path.join(repository, "src/app.js") }] }
-    },
-    "kiro"
-  );
-  assert.match(kiro.stdout, /2026-09-13-one-a1b2c3d4\.md/);
-});
-
-// Cursor's preToolUse is registered failClosed and its output schema has not
-// been verified to carry context, so nothing is added to it there.
-test("Cursor's preToolUse answer is still exactly an allow", () => {
-  const repository = createRepository();
-  writeNote(repository, "2026-09-13-one-a1b2c3d4", ["src/app.js"]);
-  const result = handleHook(
-    {
-      workspace_roots: [repository],
-      hook_event_name: "preToolUse",
-      tool_name: "Write",
-      tool_input: { file_path: path.join(repository, "src/app.js") }
-    },
-    "cursor"
-  );
-  assert.deepEqual(JSON.parse(result.stdout), { permission: "allow" });
 });
 
 test("a write to an uncovered path is reported the moment it lands", () => {
@@ -163,9 +130,7 @@ test("a write to an uncovered path is reported the moment it lands", () => {
       hook_event_name: "PostToolUse",
       tool_name: "Write",
       tool_input: { file_path: path.join(repository, "src/fresh.js") }
-    },
-    "compatible"
-  );
+    });
   const context = JSON.parse(after.stdout).hookSpecificOutput.additionalContext;
   assert.match(context, /src\/fresh\.js/);
   assert.doesNotMatch(context, /src\/covered\.js/);
@@ -184,9 +149,7 @@ test("a write that leaves nothing uncovered says nothing", () => {
         hook_event_name: "PostToolUse",
         tool_name: "Write",
         tool_input: { file_path: path.join(repository, "src/covered.js") }
-      },
-      "compatible"
-    ),
+      }),
     { exitCode: 0, stdout: "", stderr: "" }
   );
 });
@@ -210,9 +173,7 @@ test("writing a note reports what is still uncovered, never the note itself", ()
         tool_input: {
           file_path: path.join(repository, NOTES_DIRECTORY, "2026-09-13-one-a1b2c3d4.md")
         }
-      },
-      "compatible"
-    ).stdout
+      }).stdout
   ).hookSpecificOutput.additionalContext;
   assert.match(context, /still-bare\.js/);
   assert.doesNotMatch(context, /2026-09-13-one-a1b2c3d4\.md/);
@@ -229,9 +190,7 @@ test("a path outside the repository is left alone", () => {
           hook_event_name: event,
           tool_name: "Write",
           tool_input: { file_path: "/etc/hosts" }
-        },
-        "compatible"
-      ),
+        }),
       { exitCode: 0, stdout: "", stderr: "" }
     );
   }
@@ -246,16 +205,14 @@ test("reading a covered file carries its notes, not only writing to it", () => {
   const repository = createRepository();
   writeNote(repository, "2026-09-13-one-a1b2c3d4", ["src/app.js"], { title: "Why app.js is split" });
 
-  for (const tool of ["Read", "view", "fs_read"]) {
+  for (const tool of ["Read", "view"]) {
     const result = handleHook(
       {
         cwd: repository,
         hook_event_name: "PreToolUse",
         tool_name: tool,
         tool_input: { file_path: path.join(repository, "src/app.js") }
-      },
-      "compatible"
-    );
+      });
     assert.match(result.stdout, /Why app\.js is split/, tool);
   }
 });
@@ -272,9 +229,7 @@ test("reading an uncovered file reports nothing after the fact", () => {
         hook_event_name: "PostToolUse",
         tool_name: "Read",
         tool_input: { file_path: path.join(repository, "src/fresh.js") }
-      },
-      "compatible"
-    ),
+      }),
     { exitCode: 0, stdout: "", stderr: "" }
   );
 });
@@ -298,17 +253,13 @@ test("a Codex apply_patch envelope names the files it touches", () => {
   ].join("\n");
 
   const hint = handleHook(
-    { cwd: repository, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command } },
-    "compatible"
-  );
+    { cwd: repository, hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command } });
   assert.match(hint.stdout, /Why app\.js is split/);
 
   fs.mkdirSync(path.join(repository, "src"), { recursive: true });
   fs.writeFileSync(path.join(repository, "src/fresh.js"), "export {};\n");
   const after = handleHook(
-    { cwd: repository, hook_event_name: "PostToolUse", tool_name: "apply_patch", tool_input: { command } },
-    "compatible"
-  );
+    { cwd: repository, hook_event_name: "PostToolUse", tool_name: "apply_patch", tool_input: { command } });
   assert.match(
     JSON.parse(after.stdout).hookSpecificOutput.additionalContext,
     /src\/fresh\.js/
@@ -326,9 +277,7 @@ test("an ordinary shell command is not parsed for paths", () => {
         hook_event_name: "PreToolUse",
         tool_name: "Bash",
         tool_input: { command: "sed -i s/a/b/ src/app.js" }
-      },
-      "compatible"
-    ),
+      }),
     { exitCode: 0, stdout: "", stderr: "" }
   );
 });
@@ -350,59 +299,10 @@ test("a working directory reached through a symlink still resolves its files", (
       hook_event_name: "PreToolUse",
       tool_name: "Edit",
       tool_input: { file_path: "src/app.js" }
-    },
-    "compatible"
-  );
+    });
   assert.match(hint.stdout, /Why app\.js is split/);
 });
 
-/*
- * Kiro sends a list of operations. Reading only the first missed a note on the
- * second file, and a first operation pointing outside the repository
- * suppressed the notice for everything after it.
- */
-test("every Kiro operation is resolved, not just the first", () => {
-  const repository = createRepository();
-  writeNote(repository, "2026-09-13-one-a1b2c3d4", ["src/second.js"], { title: "Why second.js exists" });
-
-  const hint = handleHook(
-    {
-      cwd: repository,
-      hook_event_name: "preToolUse",
-      tool_name: "fs_write",
-      tool_input: {
-        operations: [
-          { path: path.join(repository, "src/first.js") },
-          { path: path.join(repository, "src/second.js") }
-        ]
-      }
-    },
-    "kiro"
-  );
-  assert.match(hint.stdout, /Why second\.js exists/);
-
-  fs.mkdirSync(path.join(repository, "src"), { recursive: true });
-  fs.writeFileSync(path.join(repository, "src/inside.js"), "export {};\n");
-  const after = handleHook(
-    {
-      cwd: repository,
-      hook_event_name: "postToolUse",
-      tool_name: "fs_write",
-      tool_input: {
-        operations: [{ path: "/etc/hosts" }, { path: path.join(repository, "src/inside.js") }]
-      }
-    },
-    "kiro"
-  );
-  assert.match(after.stdout, /src\/inside\.js/, "a first operation outside the repository must not silence the rest");
-});
-
-/*
- * The file names carry the date, and a reader is meant to meet a path's notes
- * oldest first. Sorting each directory as it was walked ordered them by tree
- * position instead, so an archived 2026-01 note arrived after a 2026-09 one at
- * the top level.
- */
 test("a path's notes arrive oldest first, across subdirectories", () => {
   const repository = createRepository();
   writeNote(repository, "2026-09-13-recent-a1b2c3d4", ["src/app.js"], { title: "recent" });
