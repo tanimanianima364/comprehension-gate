@@ -796,9 +796,14 @@ test("a submodule set to ignore is still reported", () => {
   git(superproject, ["commit", "-q", "-m", "ignore it"]);
 
   git(superproject, ["checkout", "-q", "-b", "feature"]);
-  fs.writeFileSync(path.join(superproject, "lib", "new.js"), "export {};\n");
-  git(path.join(superproject, "lib"), ["add", "-A"]);
-  git(path.join(superproject, "lib"), ["commit", "-q", "-m", "work in the submodule"]);
+  const checkout = path.join(superproject, "lib");
+  // The submodule's own working copy is a repository of its own, and inherits
+  // no identity on a machine that has none configured globally.
+  git(checkout, ["config", "user.email", "test@example.com"]);
+  git(checkout, ["config", "user.name", "Test"]);
+  fs.writeFileSync(path.join(checkout, "new.js"), "export {};\n");
+  git(checkout, ["add", "-A"]);
+  git(checkout, ["commit", "-q", "-m", "work in the submodule"]);
 
   assert.ok(
     changedPaths(superproject).paths.includes("lib"),
