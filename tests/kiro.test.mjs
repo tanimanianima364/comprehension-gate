@@ -1,236 +1,32 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  controlTarget,
-  handleHook
-} from "../core/gate.mjs";
+import { handleHook } from "../core/gate.mjs";
 import { adapterCommand } from "../core/command.mjs";
-import { readGateState } from "../core/state.mjs";
-import { createFixture, controlInput } from "./helpers.mjs";
+import { createRepository } from "./helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("Kiro keeps agentSpawn payload compatibility", () => {
-  const fixture = createFixture();
-  const start = handleHook(
-    { session_id: "kiro-agent-spawn", hook_event_name: "agentSpawn" },
-    "kiro",
-    fixture
-  );
+  const repository = createRepository();
+  const start = handleHook({ hook_event_name: "agentSpawn", cwd: repository }, "kiro");
   assert.match(start.stdout, /Comprehension Gate/);
+
   const write = handleHook(
-    {
-      session_id: "kiro-agent-spawn",
-      hook_event_name: "preToolUse",
-      tool_name: "fs_write",
-      tool_input: {}
-    },
-    "kiro",
-    fixture
+    { hook_event_name: "preToolUse", cwd: repository, tool_name: "fs_write", tool_input: {} },
+    "kiro"
   );
-  assert.equal(write.exitCode, 0, "legacy agentSpawn");
-  assert.equal(write.stdout, "", "legacy agentSpawn");
-});
-
-test("Kiro requires success true and the expected marker", () => {
-  const fixture = createFixture();
-  const base = { session_id: "kiro-control" };
-  handleHook({ ...base, hook_event_name: "agentSpawn" }, "kiro", fixture);
-
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "preToolUse",
-      tool_name: "read",
-      tool_input: controlInput("pass", "kiroOperations")
-    },
-    "kiro",
-    fixture
-  );
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "postToolUse",
-      tool_name: "read",
-      tool_input: controlInput("pass", "kiroOperations"),
-      tool_response: {
-        success: false,
-        result: ["<!-- comprehension-gate:pass -->"]
-      }
-    },
-    "kiro",
-    fixture
-  );
-  const afterFailedControl = handleHook(
-    { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
-    "kiro",
-    fixture
-  );
-  assert.equal(afterFailedControl.exitCode, 0);
-  assert.equal(readGateState("kiro", base, { env: fixture.env }).state.status, "pending", "success:false must not complete the control");
-
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "preToolUse",
-      tool_name: "read",
-      tool_input: controlInput("pass", "kiroOperations")
-    },
-    "kiro",
-    fixture
-  );
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "postToolUse",
-      tool_name: "read",
-      tool_input: controlInput("pass", "kiroOperations"),
-      tool_response: {
-        success: true,
-        result: ["<!-- comprehension-gate:pass -->"]
-      }
-    },
-    "kiro",
-    fixture
-  );
-  assert.equal(
-    handleHook(
-      { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
-      "kiro",
-      fixture
-    ).exitCode,
-    0
-  );
-  assert.equal(readGateState("kiro", base, { env: fixture.env }).state.status, "passed", "success:true must complete the control");
-});
-
-test("Kiro control reads require exactly one operations path on Pre and Post", () => {
-  const invalidInputs = [
-    ["direct path", controlInput("pass", "path")],
-    ["missing operations", {}],
-    ["empty operations", { operations: [] }],
-    ["non-array operations", { operations: "invalid" }],
-    ["null operation", { operations: [null] }],
-    ["missing path", { operations: [{ mode: "Line" }] }],
-    ["non-string path", { operations: [{ mode: "Line", path: 42 }] }],
-    ["two operations", {
-      operations: [
-        { mode: "Line", path: controlTarget("pass") },
-        { mode: "Line", path: controlTarget("pass") }
-      ]
-    }],
-    ["wrong operations path", {
-      operations: [{ mode: "Line", path: `${controlTarget("pass")}.other` }]
-    }],
-    ["direct target cannot override empty operations", {
-      path: controlTarget("pass"),
-      operations: []
-    }]
-  ];
-
-  for (const [index, [name, toolInput]] of invalidInputs.entries()) {
-    const fixture = createFixture();
-    const base = { session_id: `kiro-invalid-operations-${index}` };
-    handleHook({ ...base, hook_event_name: "SessionStart" }, "kiro", fixture);
-    const event = {
-      ...base,
-      tool_name: "read",
-      tool_use_id: `bad-${index}`,
-      tool_input: toolInput
-    };
-    const read = handleHook(
-      {
-        ...event,
-        hook_event_name: "preToolUse",
-      },
-      "kiro",
-      fixture
-    );
-    assert.equal(read.stdout, "", name);
-    handleHook(
-      {
-        ...event,
-        hook_event_name: "postToolUse",
-        tool_response: {
-          success: true,
-          result: ["<!-- comprehension-gate:pass -->"]
-        }
-      },
-      "kiro",
-      fixture
-    );
-    const write = handleHook(
-      { ...base, hook_event_name: "preToolUse", tool_name: "write", tool_input: {} },
-      "kiro",
-      fixture
-    );
-    assert.equal(write.exitCode, 0, name);
-    assert.equal(write.stdout, "", name);
-    assert.equal(
-      readGateState("kiro", base, { env: fixture.env }).state.status,
-      "pending",
-      `${name}: did not arm a control`
-    );
-  }
-
-  const fixture = createFixture();
-  const base = { session_id: "kiro-valid-operations" };
-  handleHook({ ...base, hook_event_name: "SessionStart" }, "kiro", fixture);
-  const arm = handleHook(
-    {
-      ...base,
-      hook_event_name: "preToolUse",
-      tool_name: "read",
-      tool_use_id: "kiro-pass",
-      tool_input: controlInput("pass", "kiroOperations")
-    },
-    "kiro",
-    fixture
-  );
-  assert.equal(arm.stdout, "");
-  handleHook(
-    {
-      ...base,
-      hook_event_name: "postToolUse",
-      tool_name: "read",
-      tool_use_id: "kiro-pass",
-      tool_input: controlInput("pass", "kiroOperations"),
-      tool_response: {
-        success: true,
-        result: ["<!-- comprehension-gate:pass -->"]
-      }
-    },
-    "kiro",
-    fixture
-  );
-
-  const allowed = handleHook(
-    { ...base, hook_event_name: "preToolUse", tool_name: "fs_write", tool_input: {} },
-    "kiro",
-    fixture
-  );
-  assert.equal(allowed.exitCode, 0);
+  assert.equal(write.exitCode, 0);
+  assert.equal(write.stdout, "");
 });
 
 /*
- * Kiro CLI 2.x embeds its hooks in the agent config instead of a standalone
- * file, but everything the gate depends on is the same. Verified against
- * 2.16.2 by capturing real hook payloads:
- *
- *   preToolUse   {"hook_event_name":"preToolUse","cwd":"...",
- *                 "tool_name":"fs_read",
- *                 "tool_input":{"operations":[{"mode":"Line","path":"..."}]}}
- *   postToolUse  ... "tool_response":{"success":true,"result":[...]}
- *
- * Two things differ from the documentation. The matcher is not a regex there:
+ * Kiro 2.x documentation is wrong about the matcher: it is not a regex, and
  * only "*" or an omitted matcher fires for every tool, while ".*" -- the value
  * the docs' own example uses -- fires for none, which would leave the gate
- * silently absent. And no payload carries a session id; the hook process gets
- * KIRO_SESSION_ID in its environment instead.
+ * silently absent.
  */
 test("the Kiro 2.x adapter matches every tool and runs the same mode", () => {
   const config = JSON.parse(
@@ -243,26 +39,13 @@ test("the Kiro 2.x adapter matches every tool and runs the same mode", () => {
   assert.match(adapterCommand("kiro-2x", "/plugin"), / kiro$/);
 });
 
-test("a Kiro 2.x session is identified by KIRO_SESSION_ID when the payload omits one", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-kiro2-"));
-  const env = { COMPREHENSION_GATE_STATE_DIR: directory, KIRO_SESSION_ID: "kiro-2x-session" };
-  const cwd = process.cwd();
-
-  assert.equal(
-    handleHook({ hook_event_name: "agentSpawn", cwd }, "kiro", { env }).exitCode,
-    0,
-    "a payload without session_id still starts a session"
-  );
-
-  const write = handleHook(
-    { hook_event_name: "preToolUse", cwd, tool_name: "fs_write", tool_input: {} },
-    "kiro",
-    { env }
-  );
-  assert.equal(write.exitCode, 0);
-  assert.equal(write.stdout, "");
-
-  const state = readGateState("kiro", { session_id: "kiro-2x-session" }, { env });
-  assert.equal(state.ok, true, "state is keyed by the environment session id");
-  assert.equal(state.state.status, "pending");
+// Kiro's only channel was a non-zero exit the host showed as a warning. It no
+// longer warns, so a stop over a changed branch has to leave stderr empty.
+test("a Kiro stop over a changed branch exits zero and says nothing", () => {
+  const repository = createRepository();
+  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
+  const stopped = handleHook({ hook_event_name: "stop", cwd: repository }, "kiro");
+  assert.equal(stopped.exitCode, 0);
+  assert.equal(stopped.stderr, "");
+  assert.equal(stopped.stdout, "");
 });

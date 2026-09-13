@@ -5,12 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  adapterCommand,
-  buildEntrypointCommand,
-  buildPinnedEntrypointCommand
-} from "../core/command.mjs";
-import { handleHook, renderInstructions } from "../core/gate.mjs";
+import { adapterCommand, buildEntrypointCommand } from "../core/command.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -30,7 +25,7 @@ test("plugin manifests and hook configurations are valid JSON", () => {
   }
 });
 
-test("shared hook config covers session start, prompt, control completion, and stop", () => {
+test("shared hook config covers session start, prompt, tool use, and stop", () => {
   const config = readJson("hooks/hooks.json");
   assert.ok(config.hooks.SessionStart);
   assert.ok(config.hooks.UserPromptSubmit);
@@ -43,6 +38,18 @@ test("shared hook config covers session start, prompt, control completion, and s
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
 });
 
+// The skill used to carry its own `git merge-base HEAD origin/HEAD` one-liner,
+// which saw nothing at all in a repository with no remote.
+test("the manual skill defers to the session instructions for the change set", () => {
+  const skill = fs.readFileSync(
+    path.join(root, "skills", "comprehension-gate", "SKILL.md"),
+    "utf8"
+  );
+  assert.doesNotMatch(skill, /origin\/HEAD/);
+  assert.doesNotMatch(skill, /merge-base/);
+  assert.match(skill, /change set command the active Comprehension Gate session instructions supply/);
+});
+
 test("native adapters register the stop event the way each host spells it", () => {
   const cursor = readJson("adapters/cursor/hooks.json");
   assert.equal(cursor.hooks.stop[0].loop_limit, 1);
@@ -50,14 +57,6 @@ test("native adapters register the stop event the way each host spells it", () =
   assert.ok(kiro.hooks.find(hook => hook.trigger === "Stop"));
   const kiro2 = readJson("adapters/kiro-2x/hooks.json");
   assert.ok(kiro2.hooks.stop);
-});
-
-test("rendered instructions carry no unfilled placeholder", () => {
-  for (const provider of ["claude", "codex", "cursor", "kiro"]) {
-    const text = renderInstructions(provider, { runtime: "/usr/bin/node" });
-    assert.doesNotMatch(text, /\{\{/, provider);
-    assert.match(text, /before (you )?finish/i, provider);
-  }
 });
 
 test("native PreToolUse adapters route unknown and MCP tools", () => {
@@ -105,24 +104,7 @@ test("entrypoint command builders reject unencoded shell arguments", () => {
     () => buildEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"),
     /shell syntax/
   );
-  assert.throws(() => buildPinnedEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"), /shell syntax/);
-  assert.throws(
-    () => buildPinnedEntrypointCommand("/plugin/core/gate.mjs", "pass", "node"),
-    /absolute path/
-  );
   assert.throws(() => adapterCommand("unknown", "/plugin"), /Unsupported adapter/);
-});
-
-test("pinned entrypoint commands use an exact runtime path", () => {
-  const command = buildPinnedEntrypointCommand(
-    "/plugin/core/gate.mjs",
-    "pass",
-    "/opt/trusted node/bin/node"
-  );
-  assert.match(command, /^'\/opt\/trusted node\/bin\/node' -e "/);
-  assert.doesNotMatch(command, /^node -e /);
-  assert.equal(parsePinnedEntrypointCommand(command).entrypoint, "/plugin/core/gate.mjs");
-  assert.equal(parsePinnedEntrypointCommand(command).argument, "pass");
 });
 
 test("adapter renderer safely executes roots with shell metacharacters", () => {
@@ -153,10 +135,7 @@ test("adapter renderer safely executes roots with shell metacharacters", () => {
     const input = provider === "cursor"
       ? { conversation_id: "quoted-cursor", hook_event_name: "sessionStart" }
       : { session_id: "quoted-kiro", hook_event_name: "SessionStart" };
-    const childEnv = {
-      ...process.env,
-      COMPREHENSION_GATE_STATE_DIR: path.join(sandbox, `state-${provider}`)
-    };
+    const childEnv = { ...process.env };
     delete childEnv.NODE_V8_COVERAGE;
     const run = spawnSync(command, {
       cwd: sandbox,
@@ -176,13 +155,6 @@ function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }
 
-function firstOutputLine(result) {
-  if (result.status !== 0) {
-    return "";
-  }
-  return String(result.stdout ?? "").split(/\r?\n/).find(Boolean)?.trim() ?? "";
-}
-
 function adapterCommandFromConfig(provider, config) {
   return provider === "cursor"
     ? config.hooks.sessionStart[0].command
@@ -199,28 +171,4 @@ function parseEntrypointCommand(command) {
   };
 }
 
-function parsePinnedEntrypointCommand(command) {
-  const match = command.match(/^'[^']+(?:'"'"'[^']*)*' -e "([^"]+)" ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
-  assert.ok(match, command);
-  return {
-    bootstrap: match[1],
-    entrypoint: Buffer.from(match[2], "base64url").toString("utf8"),
-    argument: match[3]
-  };
-}
 
-function parseAnyPinnedEntrypointCommand(command) {
-  const match = command.match(/ ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
-  assert.ok(match, command);
-  return {
-    entrypoint: Buffer.from(match[1], "base64url").toString("utf8"),
-    argument: match[2]
-  };
-}
-
-function assertShellPathIsOpaque(command, rawPath) {
-  assert.equal(command.includes(rawPath), false);
-  for (const token of ["$HOME", "$(", "%TEMP%", "&", "|", "^", "!", "`"]) {
-    assert.equal(command.includes(token), false, token);
-  }
-}
