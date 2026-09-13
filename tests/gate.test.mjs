@@ -328,8 +328,9 @@ test("a repository whose every half failed still makes the hook speak", { skip: 
  * an unrecorded change is reported as an accounted-for one.
  *
  * The injection is real: `git status` reads the index and `git diff` between
- * two trees does not, so pointing GIT_INDEX_FILE at a directory fails exactly
- * one of the two halves.
+ * two trees does not, so an unreadable index fails exactly one of the halves.
+ * (An inherited GIT_INDEX_FILE cannot be used for this any more -- the runner
+ * strips every such variable, since the host's could point anywhere.)
  */
 test("a half-collected change set is never reported as fully recorded", () => {
   const repository = createRepository();
@@ -346,8 +347,7 @@ test("a half-collected change set is never reported as fully recorded", () => {
     "with both halves, the uncommitted file is reported"
   );
 
-  const previous = process.env.GIT_INDEX_FILE;
-  process.env.GIT_INDEX_FILE = repository;
+  fs.chmodSync(path.join(repository, ".git", "index"), 0o000);
   try {
     const notice = claudeContext(
       handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
@@ -355,10 +355,6 @@ test("a half-collected change set is never reported as fully recorded", () => {
     assert.match(notice, /could not be collected/);
     assert.doesNotMatch(notice, /unrecorded\.js/, "the half that failed is unknown, not reported");
   } finally {
-    if (previous === undefined) {
-      delete process.env.GIT_INDEX_FILE;
-    } else {
-      process.env.GIT_INDEX_FILE = previous;
-    }
+    fs.chmodSync(path.join(repository, ".git", "index"), 0o644);
   }
 });

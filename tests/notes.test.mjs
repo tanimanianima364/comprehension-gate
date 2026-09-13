@@ -264,3 +264,17 @@ test("a blank line between entries does not end the list", () => {
     []
   );
 });
+
+/*
+ * A trailing space is a legal part of a file name. Trimming the entry made a
+ * note that named "app.js " cover "app.js" instead: a path it never mentioned
+ * silenced, and the one it did mention still reported.
+ */
+test("an entry is not trimmed, so it cannot cover a path it does not name", () => {
+  const repository = createRepository();
+  writeNote(repository, "space.md", "---\ncovers:\n  - app.js \n---\n");
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/space.md`, "app.js", "app.js "]),
+    ["app.js"]
+  );
+});

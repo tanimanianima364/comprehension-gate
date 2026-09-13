@@ -144,7 +144,14 @@ function parseList(frontMatter, key) {
     if (entry === null) {
       return [];
     }
-    items.push(entry[1].trimEnd());
+    /*
+     * Not trimmed. A trailing space is a legal part of a file name, and taking
+     * it off made a note that named "app.js " cover "app.js" instead -- a path
+     * it never mentioned silenced, and the one it did mention still reported.
+     * An entry with an accidental trailing space now simply matches nothing,
+     * which is the direction that leaves the path in the reminder.
+     */
+    items.push(entry[1]);
   }
   return items;
 }
