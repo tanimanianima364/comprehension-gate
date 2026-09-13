@@ -48,20 +48,24 @@ supersedes:
   - 2026-01-31-an-earlier-note-0a1b2c3d
 ---
 
-# What this change was for
+# One line naming what this change did
+
+## What this change was for
 
 The goal, in the user's terms rather than the code's.
 
-# The approach, and what it rejected
+## The approach, and what it rejected
 
 Why this way. Name at least one alternative that was considered and say what
 ruled it out — that is the part a reader cannot recover from the diff.
 
-# How it is built
+## How it is built
 
 The shape of the implementation and the intent behind it: what each piece is
 responsible for, and which parts are load-bearing rather than incidental.
 ```
+
+The first `#` heading is the note's title, and the hook shows it when naming the note before an edit — so make it say what the change did, not what section follows.
 
 `covers` is the only part read by a machine, so its shape is fixed and small. The key is on a line of its own, spelled `covers:` and nothing else. Each entry is a line of `  - ` followed by one repository-relative path, **taken literally to the end of the line**, trailing spaces included: no quoting, no escaping, no inline `[a, b]`, no comments. Every character is part of the name, so a path holding a quote, a comma, a `#` or a backslash is written plainly and matched exactly as git spells it. The one exception is `%`: write it as it appears in the name and the reader escapes it for you, which is what keeps a file called `x%FF.js` distinct from one whose name holds a raw byte.
 
@@ -69,15 +73,17 @@ The list is read whole or not at all. A blank line between entries is fine and t
 
 A note counts only for the change it is part of. A note an earlier branch left about a file records what *that* change was for, so it does not answer for yours: a file that has been explained once is still reported when you change it again on a new branch.
 
-Within one branch it is the other way round: once a path is covered, the reminder stops naming it even if you go on changing that file. The reminder is a floor, not a ceiling. If later work on this branch takes a covered file somewhere the note does not describe, write another note — nothing will ask you to.
+Within one branch it is the other way round: once a path is covered, the reminder stops naming it even if you go on changing that file. The reminder is a floor, not a ceiling. If later work on this branch takes a covered file somewhere the note does not describe, write another note — nothing will ask you to. The hook still names a path's notes when a tool reads or writes it, so an edit that contradicts one is put in front of you even after the reminder has gone quiet.
 
-`supersedes` is for the reader. List the notes this change invalidates; leave the key out when there are none. Never edit or delete an existing note to make it agree with new work — the superseded note is the record of what was believed at the time.
+`supersedes` is for the reader. List only the notes whose decision no longer holds; leave the key out when there are none. A note that refines an earlier one rather than overturning it supersedes nothing and simply covers the same paths — the hook names a path's notes oldest first, so the two read as the evolution they are. Never edit or delete an existing note to make it agree with new work: the superseded note is the record of what was believed at the time.
 
-Before changing a file, look for the notes that cover it and read them. A change that contradicts a recorded intent is fine, and is exactly when a new note that supersedes the old one is owed.
+**Before you change a file, look for the notes that cover it and read them** — find them with `grep -rlF -- "<path>" docs/notes` — fixed-string, or a name holding `[`, `.` or `*` is read as a pattern and missed. Do this yourself rather than waiting to be told: the hook names a file's notes when a tool reads or writes it, but a host attaches that context to the tool's result, so a hint on the edit itself reaches you only once the edit has run. A change that contradicts a recorded intent is fine, and is exactly when a new note that supersedes the old one is owed.
 
 ## How the hook behaves
 
-At the start of a session and at every user message, the hook derives the branch's change set from git, subtracts every path some note already covers, and injects what is left. It keeps no state between invocations, so the list is always the branch's current state rather than a record of what you have already done.
+At the start of a session and at every user message, the hook derives the branch's change set from git, subtracts every path covered by a note that is itself part of that change set, and injects what is left. When a tool reads or writes a file some note covers, it names those notes and says which of them a later note replaced; after a tool writes to an uncovered file it says so immediately. That context arrives with the tool's result rather than ahead of it, which is why a hint on a read is worth more than one on the edit, and why looking a file's notes up yourself comes first. It keeps no state between invocations, so the list is always the branch's current state rather than a record of what you have already done.
+
+A write made through a shell command carries no file path the hook can resolve, so neither of those two arrives for it; the change still appears in the reminder at the next user message.
 
 Nothing enforces any of this. The hook cannot hold the turn, does not warn the user, and has no way to tell whether a docstring was written or whether a note says anything true: the injected reminder is the only notice there is. Never leave a change unrecorded because no one is checking, never move a change somewhere the gate does not look, and never write a note or a docstring whose only purpose is to make the reminder go quiet.
 

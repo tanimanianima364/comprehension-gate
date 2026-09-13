@@ -15,8 +15,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { changedPaths } from "./changes.mjs";
-import { NOTES_DIRECTORY, uncoveredPaths } from "./notes.mjs";
+import { changedPaths, encodePath, repositoryRoot } from "./changes.mjs";
+import { NOTES_DIRECTORY, notesCovering, uncoveredPaths } from "./notes.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
@@ -24,6 +24,21 @@ const CHANGES_PATH = path.join(path.dirname(SCRIPT_PATH), "changes.mjs");
 const MAX_LISTED_PATHS = 10;
 const INCOMPLETE_NOTICE =
   "Comprehension Gate: part of the change set could not be collected, so nothing can be said about what it holds. Treat the branch as having changes that are not listed rather than as unchanged.";
+/*
+ * Whether a tool reads or writes a file, guessed from its name. A name proves
+ * nothing across hosts, which is why the old control protocol refused to trust
+ * one -- but that decision gated the gate, and this one only decides whether
+ * to offer a hint. Being wrong costs a missing hint or a harmless one, so a
+ * pattern that catches every host's spelling beats a list that misses new
+ * ones.
+ */
+const WRITING_TOOL = /write|edit|patch|create|update|append|insert|delete|remove|move|rename/i;
+const READING_TOOL = /read|view|open|cat|inspect|grep|search/i;
+const TOOL_PATH_KEYS = ["file_path", "filePath", "path", "notebook_path", "notebookPath"];
+const PATCH_TEXT_KEYS = ["command", "patch", "input", "text"];
+const PATCH_ENVELOPE = "*** Begin Patch";
+const PATCH_TARGET = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/;
+const PATCH_MOVE = /^\*\*\* Move to: (.+)$/;
 
 /*
  * The instructions carry the exact command that prints the change set, so the
@@ -96,14 +111,18 @@ export function handleHook(input, mode = "compatible") {
   }
 
   if (event === "posttooluse") {
-    return toolAllowResult(mode, "PostToolUse");
+    const notice = uncoveredNotice(input, mode);
+    return notice === null
+      ? toolAllowResult(mode, "PostToolUse")
+      : contextResult(mode, "PostToolUse", notice);
   }
 
   if (isStopEvent) {
     return stopAllowResult(mode);
   }
 
-  return toolAllowResult(mode, "PreToolUse");
+  const hint = recordedIntent(input, mode);
+  return hint === null ? toolAllowResult(mode, "PreToolUse") : contextResult(mode, "PreToolUse", hint);
 }
 
 // Unparseable stdin means the event type is unknown too, so no event-specific
@@ -151,6 +170,186 @@ function changeNotice(input) {
     "A purely mechanical change needs no note and can stay listed here.",
     "Nothing holds the turn and the user is shown no warning, so this reminder is the only notice you get."
   ].join(" ");
+}
+
+/*
+ * What is already recorded about the files a tool is about to read or write.
+ *
+ * It fires on reads as well as writes because of when the context arrives: a
+ * host attaches it to the tool result, so a hint on the edit itself reaches
+ * the agent only after that edit has run. A hint on the read that precedes the
+ * edit arrives in time to change it. The instructions still tell the agent to
+ * look for a file's notes before changing it; this is the backstop, not the
+ * plan.
+ *
+ * Cursor is excluded. Its preToolUse is registered failClosed and its output
+ * schema has not been verified to carry context, so an unrecognized field
+ * there risks failing every tool call rather than adding a hint.
+ */
+function recordedIntent(input, mode) {
+  if (mode === "cursor") {
+    return null;
+  }
+  const target = toolTargets(input, READING_TOOL);
+  if (target === null) {
+    return null;
+  }
+  const covering = notesCovering(target.root, target.paths);
+  if (covering.length === 0) {
+    return null;
+  }
+  const described = covering.map(note => {
+    const title = note.title === null ? note.file : `${note.file} -- ${note.title}`;
+    return note.supersededBy === null ? title : `${title} (superseded by ${note.supersededBy})`;
+  });
+  return [
+    `Comprehension Gate: ${listPaths(target.paths)} is covered by ${described.map(displayPath).join("; ")}.`,
+    "Read what applies before changing it. A change that contradicts a recorded intent is fine,",
+    "and is exactly when a new note superseding the old one is owed."
+  ].join(" ");
+}
+
+/*
+ * What still has no record, said the moment a write lands rather than at the
+ * next user message. Nothing holds the turn, so this is the only notice that
+ * arrives while the work is still in hand.
+ *
+ * It costs the same two git calls the prompt notice costs, which is why it is
+ * spent only on a tool that named a file inside the repository -- and why a
+ * write to the notes tree spends it too, since that is exactly when the
+ * remaining list has changed.
+ */
+function uncoveredNotice(input, mode) {
+  if (mode === "cursor" || toolTargets(input, null) === null) {
+    return null;
+  }
+  return changeNotice(input);
+}
+
+/*
+ * The repository-relative paths a tool is about to touch, or null when there
+ * are none to resolve: a shell command that is not a patch, paths outside the
+ * repository, or a tool that neither writes nor (when `alsoRead` is given)
+ * reads.
+ *
+ * The working directory is resolved through symlinks, because the repository
+ * root is; without that, a working directory reached by a link is compared
+ * against its own target and every file under it looks outside.
+ *
+ * A symlinked file answers to two names and both matter. git tracks the link
+ * under its own name, so that is the one a deletion touches and the one its
+ * notes are filed under; but a write through the link changes the target, and
+ * that is the file git will report as changed. Resolving only the target lost
+ * the link's own notes; resolving only the link loses the target's. Both are
+ * collected, and the target only when it is inside the repository.
+ */
+function toolTargets(input, alsoRead) {
+  const name = String(input?.tool_name ?? "");
+  if (!WRITING_TOOL.test(name) && !(alsoRead !== null && alsoRead.test(name))) {
+    return null;
+  }
+  const directory = hookDirectory(input);
+  if (directory === null) {
+    return null;
+  }
+  const root = repositoryRoot(directory);
+  if (root === null) {
+    return null;
+  }
+  const base = realPath(directory) ?? directory;
+  const paths = new Set();
+  for (const raw of toolPaths(input?.tool_input)) {
+    for (const relative of repositoryRelatives(root, base, raw)) {
+      paths.add(relative);
+    }
+  }
+  return paths.size === 0 ? null : { root, paths: [...paths] };
+}
+
+/*
+ * Every path a tool payload names. Kiro nests them in a list of operations,
+ * and Codex sends a patch envelope as a command string -- which is read here
+ * as the structured format it is, by its own `*** ... File:` headers, and
+ * never as a shell command to be parsed.
+ */
+function toolPaths(toolInput) {
+  const paths = [];
+  for (const key of TOOL_PATH_KEYS) {
+    if (typeof toolInput?.[key] === "string" && toolInput[key] !== "") {
+      paths.push(toolInput[key]);
+    }
+  }
+  const operations = toolInput?.operations;
+  if (Array.isArray(operations)) {
+    for (const operation of operations) {
+      if (typeof operation?.path === "string" && operation.path !== "") {
+        paths.push(operation.path);
+      }
+    }
+  }
+  for (const key of PATCH_TEXT_KEYS) {
+    const value = toolInput?.[key];
+    if (typeof value === "string" && value.includes(PATCH_ENVELOPE)) {
+      paths.push(...patchTargets(value));
+    }
+  }
+  return paths;
+}
+
+function patchTargets(patch) {
+  const paths = [];
+  for (const line of patch.split(/\r?\n/)) {
+    const target = line.match(PATCH_TARGET) ?? line.match(PATCH_MOVE);
+    if (target) {
+      paths.push(target[1].trim());
+    }
+  }
+  return paths;
+}
+
+/*
+ * Both names a path may answer to: the one as written, with only the directory
+ * holding it resolved, and -- when it is a link into the repository -- the one
+ * it points at.
+ */
+function repositoryRelatives(root, base, raw) {
+  const absolute = path.isAbsolute(raw) ? raw : path.resolve(base, raw);
+  const directory = realPath(path.dirname(absolute)) ?? path.dirname(absolute);
+  const names = [path.join(directory, path.basename(absolute))];
+  const target = realPath(absolute);
+  if (target !== null && target !== names[0]) {
+    names.push(target);
+  }
+  return names.map(name => insideRepository(root, name)).filter(name => name !== null);
+}
+
+// Spelled the way a path from git is spelled, so a tool naming the ordinary
+// file `x%FF.js` looks up the notes for that file rather than for the one
+// whose name holds a raw 0xFF.
+function insideRepository(root, absolute) {
+  const relative = encodePath(path.relative(root, absolute));
+  // `..` as a prefix is not the same as `..` as a path segment: a file called
+  // `..hidden.js` sits in the repository like any other, and rejecting it left
+  // every note about it unmentioned and every write to it unreported.
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.split(path.sep).join("/");
+}
+
+// The nearest existing ancestor, so a directory that does not exist yet -- one
+// a file is about to be created in -- still resolves.
+function realPath(target) {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    const parent = path.dirname(target);
+    if (parent === target) {
+      return null;
+    }
+    const resolved = realPath(parent);
+    return resolved === null ? null : path.join(resolved, path.basename(target));
+  }
 }
 
 /*
