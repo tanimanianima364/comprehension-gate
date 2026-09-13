@@ -502,3 +502,49 @@ test("a tool path with a percent sign finds its own notes", () => {
   );
   assert.match(hint.stdout, /Why the percent is literal/);
 });
+
+/*
+ * The change set spells `%` as `%25`, and a note is found in it under that
+ * spelling -- but the spelling is a matching key, not a file name. Handing it
+ * to the reader as the note's path sent them to `n%25.md`: a file that does
+ * not exist, or worse, a different note that happens to be called that.
+ */
+test("a note whose name holds a percent sign is named by its real path", () => {
+  const repository = createRepository();
+  writeNote(repository, "2026-09-14-n%", ["src/app.js"], { title: "Why the percent is literal" });
+
+  assert.deepEqual(notesCovering(repository, ["src/app.js"]), [
+    { file: `${NOTES_DIRECTORY}/2026-09-14-n%.md`, title: "Why the percent is literal", supersededBy: null }
+  ]);
+});
+
+test("the hint names the note file that exists, not its matching key", () => {
+  const repository = createRepository();
+  writeNote(repository, "2026-09-14-n%", ["src/app.js"], { title: "Why the percent is literal" });
+
+  const hint = handleHook(
+    {
+      cwd: repository,
+      hook_event_name: "PreToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: path.join(repository, "src/app.js") }
+    });
+  const context = JSON.parse(hint.stdout).hookSpecificOutput.additionalContext;
+  assert.match(context, /2026-09-14-n%\.md/, "the file on disk");
+  assert.doesNotMatch(context, /n%25\.md/, "never the key it is matched under");
+});
+
+test("a superseding note is named by its real path too", () => {
+  const repository = createRepository();
+  writeNote(repository, "2026-01-31-old-0a1b2c3d", ["src/app.js"], { title: "The old approach" });
+  writeNote(repository, "2026-09-14-new%", ["src/app.js"], {
+    supersedes: ["2026-01-31-old-0a1b2c3d"],
+    title: "The new approach"
+  });
+
+  assert.equal(
+    notesCovering(repository, ["src/app.js"])[0].supersededBy,
+    `${NOTES_DIRECTORY}/2026-09-14-new%.md`
+  );
+});
+

@@ -82,7 +82,15 @@ export function isNotePath(candidate) {
 function coveredPaths(root, inChangeSet) {
   const covered = new Set();
   for (const note of readNotes(root)) {
-    if (!inChangeSet.has(note.file)) {
+    /*
+     * Spelled the way the change set spells it, escape character included,
+     * for this comparison only. Without it a note called `n%.md` is never
+     * found in the set -- while a base note that happens to be called
+     * `n%25.md` is, and covers this change with a record that was never about
+     * it. The spelling is a matching key, not a file name: the note's own path
+     * stays as it is on disk, since that is what the reader is sent to open.
+     */
+    if (!inChangeSet.has(encodePath(note.file))) {
       continue;
     }
     for (const entry of note.covers) {
@@ -174,21 +182,6 @@ function compare(left, right) {
 }
 
 /*
- * Front matter is read by hand rather than with a YAML parser: the plugin has
- * no dependencies, and the one key that has to be machine-read is a list of
- * strings. Both spellings a writer reaches for are read -- the block list and
- * the inline `[a, b]` -- because a list spelled the other way would silently
- * cover nothing.
- *
- * Leniency past that point runs the wrong way, and this is the one place in
- * the plugin where failing soft is not the safe direction. Failing to read a
- * list leaves its paths reported, which someone notices and can fix; reading
- * one loosely silences paths the note never explained, which nobody ever finds
- * out about. So anything that is not unambiguously a list of strings -- an
- * unclosed bracket, an unterminated quote, a bare scalar -- reads as no list
- * at all.
- */
-/*
  * Front matter is read by hand, and the grammar it accepts is deliberately
  * smaller than YAML's rather than an approximation of it.
  *
@@ -271,13 +264,6 @@ function coveredPath(entry) {
 
 // The repository's own spelling. This runs on POSIX only, where the separator
 // is the one git uses and a backslash in a name is part of the name.
-/*
- * Spelled the way the change set spells it, escape character included. The
- * check "is this note part of the change set" compares this to a path git
- * reported, and without the same encoding a note called `n%.md` is never
- * found in the set -- while a base note that happens to be called `n%25.md`
- * is, and covers this change with a record that was never about it.
- */
 function repositoryPath(root, target) {
-  return encodePath(path.relative(root, target));
+  return path.relative(root, target);
 }
