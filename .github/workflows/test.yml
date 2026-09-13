@@ -6,8 +6,9 @@ on:
 jobs:
   test:
     # POSIX only, but two POSIX hosts: macOS differs from Linux in the places
-    # these tests lean on -- BSD grep, a symlinked temp directory, and a git
-    # that ships with Xcode rather than with the distribution.
+    # these tests lean on -- BSD grep, a deep and symlinked temp directory, a
+    # file system that refuses names that are not valid UTF-8, and a git that
+    # ships with Xcode rather than with the distribution.
     strategy:
       fail-fast: false
       matrix:

@@ -40,6 +40,24 @@ function commit(repository, message) {
   git(repository, ["commit", "-q", "-m", message]);
 }
 
+/*
+ * A name that is not valid UTF-8 cannot be written on every file system --
+ * APFS refuses it -- but git's index has no such rule, and a history made
+ * elsewhere checks out on such a host in exactly this state: the entry
+ * present, the file missing. Staging the name is what every host can do.
+ */
+function stage(repository, name, contents) {
+  const blob = spawnSync("git", ["-C", repository, "hash-object", "-w", "--stdin"], {
+    input: contents,
+    encoding: "utf8"
+  });
+  assert.equal(blob.status, 0, blob.stderr);
+  const staged = spawnSync("git", ["-C", repository, "update-index", "--add", "--index-info"], {
+    input: Buffer.concat([Buffer.from(`100644 ${blob.stdout.trim()}\t`), name, Buffer.from("\n")])
+  });
+  assert.equal(staged.status, 0, staged.stderr.toString());
+}
+
 test("a directory outside any repository has no change set", () => {
   assert.equal(changedPaths(fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "not-a-repo-"))), null);
   assert.equal(changedPaths("relative/path"), null);
@@ -289,7 +307,10 @@ test("a committed half too large to collect still leaves the working tree report
   assert.equal(whole.complete, true);
   assert.equal(whole.paths.length, 41);
 
-  const clipped = changedPaths(repository, { maxBuffer: 64 });
+  // Room for the line naming the repository, or one commit id, but not for
+  // forty file names. The temporary directory is deep on macOS and shallow on
+  // Linux, so the room is measured rather than assumed.
+  const clipped = changedPaths(repository, { maxBuffer: Buffer.byteLength(repository) + 64 });
   assert.deepEqual(clipped.paths, ["working.js"]);
   assert.equal(clipped.complete, false, "a half that could not be collected is admitted, not hidden");
 });
@@ -743,7 +764,7 @@ test("an inherited GIT_DIR does not redirect the answer to another repository", 
  */
 test("an escaped name and an ordinary name that spells it are two paths", () => {
   const repository = createRepository();
-  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xff]), Buffer.from(".js")]), "raw\n");
+  stage(repository, Buffer.concat([Buffer.from("x"), Buffer.from([0xff]), Buffer.from(".js")]), "raw\n");
   fs.writeFileSync(path.join(repository, "x%FF.js"), "literal\n");
 
   const changes = changedPaths(repository);
@@ -762,8 +783,8 @@ test("an ordinary path is not otherwise rewritten", () => {
 
 test("two file names that are not valid UTF-8 stay two paths", () => {
   const repository = createRepository();
-  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xff]), Buffer.from(".js")]), "1\n");
-  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xfe]), Buffer.from(".js")]), "2\n");
+  stage(repository, Buffer.concat([Buffer.from("x"), Buffer.from([0xff]), Buffer.from(".js")]), "1\n");
+  stage(repository, Buffer.concat([Buffer.from("x"), Buffer.from([0xfe]), Buffer.from(".js")]), "2\n");
 
   const changes = changedPaths(repository);
   assert.equal(changes.paths.length, 2, `both names survive: ${JSON.stringify(changes.paths)}`);
