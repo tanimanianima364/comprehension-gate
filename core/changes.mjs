@@ -12,7 +12,7 @@
  * to follow. Ignored files are in neither half, so scratch files stay free.
  */
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,16 +43,114 @@ const BASE_CANDIDATES = [
   "refs/heads/master"
 ];
 
-function git(directory, args, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
-  return execFileSync("git", ["-C", directory, ...args], {
-    encoding: "utf8",
-    // stderr is captured rather than discarded: it is the only thing that
-    // separates "these histories are unrelated" from "a commit could not be
-    // read", which git reports with the same exit code.
+/*
+ * Every variable below names a repository, an index or an object store, and git
+ * obeys them over the directory it was pointed at. Inherited from the host --
+ * a hook fired from inside another git command, a task runner, a test harness --
+ * they make the plugin answer about a tree nobody asked about, confidently and
+ * completely. They are removed for our own calls; nothing here wants them.
+ */
+const GIT_ENVIRONMENT = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_PREFIX"
+];
+
+/*
+ * spawnSync rather than execFileSync, because stderr on a SUCCESSFUL exit is
+ * the thing that has to be read: `git status` warns and exits 0 when it cannot
+ * open part of the working tree, and the listing it printed is then short of
+ * whatever it could not reach.
+ *
+ * stdout stays a Buffer. A file name is bytes, and decoding it as UTF-8 too
+ * early replaces every invalid byte with the same character -- two differently
+ * named files collapse into one path and one of them disappears from the
+ * change set.
+ */
+function run(directory, args, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
+  const environment = { ...process.env };
+  for (const name of GIT_ENVIRONMENT) {
+    delete environment[name];
+  }
+  const result = spawnSync("git", ["-C", directory, ...args], {
     stdio: ["ignore", "pipe", "pipe"],
     timeout: GIT_TIMEOUT_MS,
-    maxBuffer
+    maxBuffer,
+    env: environment
   });
+  return {
+    ok: result.error === undefined && result.status === 0,
+    status: typeof result.status === "number" ? result.status : null,
+    signal: result.signal ?? null,
+    failed: result.error !== undefined,
+    stdout: result.stdout ?? Buffer.alloc(0),
+    stderr: (result.stderr ?? Buffer.alloc(0)).toString("utf8")
+  };
+}
+
+// A command whose whole purpose is to answer a question: anything but a clean
+// success is a failure the caller has to hear about.
+function ask(directory, args, maxBuffer) {
+  const result = run(directory, args, maxBuffer);
+  if (!result.ok) {
+    throw new Error(`git ${args[0]} failed: ${result.stderr.trim() || result.signal || result.status}`);
+  }
+  return result;
+}
+
+/*
+ * A command that prints a list. git warns on stderr and still exits 0 when it
+ * could not read part of the tree, so a clean exit is not enough: a listing git
+ * itself said was short must not be passed off as the whole of it.
+ */
+function listing(directory, args, maxBuffer) {
+  const result = run(directory, args, maxBuffer);
+  if (!result.ok || result.stderr !== "") {
+    throw new Error(`git ${args[0]} could not list the whole tree: ${result.stderr.trim() || result.status}`);
+  }
+  return fieldsOf(result.stdout);
+}
+
+// NUL-separated, split at the byte level so a name can hold anything but NUL.
+function fieldsOf(buffer) {
+  const fields = [];
+  let start = 0;
+  for (let index = 0; index <= buffer.length; index += 1) {
+    if (index === buffer.length || buffer[index] === 0) {
+      if (index > start) {
+        fields.push(decodePath(buffer.subarray(start, index)));
+      }
+      start = index + 1;
+    }
+  }
+  return fields;
+}
+
+/*
+ * UTF-8 when the bytes are UTF-8, and a lossless escape when they are not.
+ * Decoding invalid bytes the ordinary way maps every one of them to U+FFFD, so
+ * two files whose names differ only there become the same string and one of
+ * them vanishes from the change set without a trace.
+ */
+function decodePath(buffer) {
+  const text = buffer.toString("utf8");
+  return Buffer.compare(Buffer.from(text, "utf8"), buffer) === 0 ? text : escapeBytes(buffer);
+}
+
+function escapeBytes(buffer) {
+  let escaped = "";
+  for (const byte of buffer) {
+    escaped += byte >= 0x20 && byte < 0x7f && byte !== 0x25
+      ? String.fromCharCode(byte)
+      : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return escaped;
 }
 
 export function changedPaths(directory, options = {}) {
@@ -66,16 +164,23 @@ export function changedPaths(directory, options = {}) {
     // Only the terminating newline: a directory whose name ends in a space is
     // a different directory, and trimming it examines someone else's
     // repository and reports its change set as this one's.
-    root = fs.realpathSync(withoutNewline(git(directory, ["rev-parse", "--show-toplevel"], maxBuffer)));
+    root = fs.realpathSync(
+      withoutNewline(ask(directory, ["rev-parse", "--show-toplevel"], maxBuffer).stdout.toString("utf8"))
+    );
   } catch {
     return null;
   }
 
+  /*
+   * null is reserved for "this is not a repository", which is the only reason
+   * to say nothing at all. A repository whose every half failed still gets an
+   * answer -- an empty one that admits it is empty because nothing could be
+   * read, not because nothing changed. Returning null there made the two
+   * indistinguishable, and the hook went silent over a branch it could not
+   * look at.
+   */
   const committed = attempt(() => committedPaths(root, maxBuffer));
   const working = attempt(() => workingTreePaths(root, maxBuffer));
-  if (committed === null && working === null) {
-    return null;
-  }
   const paths = new Set([...(committed ?? []), ...(working ?? [])]);
   return {
     root,
@@ -109,25 +214,39 @@ function attempt(collect) {
 function committedPaths(root, maxBuffer) {
   const base = resolveBase(root, maxBuffer);
   if (base === null) {
+    /*
+     * No base ref at all. That is ordinary in a repository with no commits
+     * yet, and a failure in one that has them: the branch has a committed half
+     * and this code has no way to compute it. Saying "empty" there erased
+     * every commit a `--single-branch` clone or a repository whose trunk is
+     * called something other than main or master had made.
+     */
+    if (headIsBorn(root, maxBuffer)) {
+      throw new Error("No base branch could be found to compare against.");
+    }
     return [];
   }
-  let mergeBase;
-  try {
-    mergeBase = git(root, ["merge-base", "HEAD", base]).trim();
-  } catch (error) {
+  const found = run(root, ["merge-base", "HEAD", base], maxBuffer);
+  if (!found.ok) {
     /*
      * Exit 1 with nothing on stderr is git's answer for "these histories have
      * no common ancestor" -- and also what it says when a shallow clone simply
      * does not hold the commit where they meet, since a shallow boundary looks
-     * like a commit with no parents. The first is legitimately empty; the
-     * second is a branch whose whole committed half is missing from the
-     * answer, so a shallow repository is asked about before believing it.
+     * like a commit with no parents.
+     *
+     * Neither is an empty committed half. A branch with no ancestor in common
+     * with its base still has every one of its commits, and which of them a
+     * reviewer would call new cannot be worked out from here; a shallow clone
+     * is missing the answer rather than holding an empty one. Both say the
+     * list is short.
      */
-    if (error?.status === 1 && String(error.stderr ?? "") === "" && !isShallow(root, maxBuffer)) {
-      return [];
-    }
-    throw error;
+    throw new Error(
+      isShallow(root, maxBuffer)
+        ? "The clone is shallow and does not reach the merge base."
+        : `No merge base with ${base}: ${found.stderr.trim() || "the histories are unrelated"}`
+    );
   }
+  const mergeBase = found.stdout.toString("utf8").trim();
   /*
    * --no-renames so a renamed file is reported as both a deletion and an
    * addition, matching how the working tree half names both paths.
@@ -137,8 +256,10 @@ function committedPaths(root, maxBuffer) {
    * the committed half of an ordinary branch cannot be collected at all --
    * no fault injection needed, just a file with that name.
    */
-  return splitFields(
-    git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD", "--"], maxBuffer)
+  return listing(
+    root,
+    ["diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", mergeBase, "HEAD", "--"],
+    maxBuffer
   );
 }
 
@@ -191,59 +312,55 @@ function resolveBase(root, maxBuffer) {
  * ref reads the ref file alone and succeeds even then.
  */
 function refState(root, candidate, maxBuffer) {
-  const named = attemptGit(() => git(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer));
+  const named = run(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer);
   if (!named.ok) {
     return isAbsence(named) ? MISSING : UNREADABLE;
   }
-  const commit = attemptGit(() =>
-    git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer)
-  );
+  const commit = run(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer);
   return commit.ok ? PRESENT : UNREADABLE;
 }
 
-function attemptGit(call) {
-  try {
-    return { ok: true, stdout: call(), status: 0, signal: null, stderr: "" };
-  } catch (error) {
-    return {
-      ok: false,
-      stdout: "",
-      status: typeof error?.status === "number" ? error.status : null,
-      signal: error?.signal ?? null,
-      stderr: String(error?.stderr ?? "")
-    };
+// Whether HEAD names a commit. A repository with no commits yet has no
+// committed half to miss; one that does had its half computed or it did not.
+function headIsBorn(root, maxBuffer) {
+  const result = run(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], maxBuffer);
+  if (result.ok) {
+    return true;
   }
+  if (isAbsence(result)) {
+    return false;
+  }
+  throw new Error("Whether HEAD names a commit could not be determined.");
 }
 
 /*
  * The one failure that means "there is nothing here" rather than "I could not
  * look": git exited 1 and said nothing. A process killed by a signal -- which
  * is also how a timeout arrives -- reports no exit code at all and an empty
- * stderr, and reading that as an absence turned every question this file asks
- * into a confident "no": no ref, no default branch, not shallow. Each of those
+ * stderr, and a git that could not be started reports neither; reading any of
+ * those as an absence turned every question this file asks into a confident
+ * "no": no ref, no default branch, not shallow, no commits. Each of those
  * answers empties the change set, so a git that was killed reported a branch
  * with commits on it as unchanged.
  */
 function isAbsence(result) {
-  return result.status === 1 && result.signal === null && result.stderr === "";
+  return result.status === 1 && result.signal === null && !result.failed && result.stderr === "";
 }
 
 // Asked only to decide whether an empty merge-base answer can be believed, so
 // not being able to ask is itself a reason not to believe it.
 function isShallow(root, maxBuffer) {
-  const result = attemptGit(() => git(root, ["rev-parse", "--is-shallow-repository"], maxBuffer));
+  const result = run(root, ["rev-parse", "--is-shallow-repository"], maxBuffer);
   if (!result.ok) {
     throw new Error("Whether the repository is shallow could not be determined.");
   }
-  return result.stdout.trim() === "true";
+  return result.stdout.toString("utf8").trim() === "true";
 }
 
 function originHead(root, maxBuffer) {
-  const result = attemptGit(() =>
-    git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], maxBuffer)
-  );
+  const result = run(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], maxBuffer);
   if (result.ok) {
-    const head = result.stdout.trim();
+    const head = result.stdout.toString("utf8").trim();
     return head === "" ? null : head;
   }
   // No remote, or no default branch recorded for it -- but only when git said
@@ -266,8 +383,10 @@ function originHead(root, maxBuffer) {
  * its last characters.
  */
 function workingTreePaths(root, maxBuffer) {
-  const fields = splitFields(
-    git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], maxBuffer)
+  const fields = listing(
+    root,
+    ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+    maxBuffer
   );
   const paths = [];
   for (let index = 0; index < fields.length; index += 1) {
@@ -298,9 +417,6 @@ function withoutNewline(output) {
   return output.replace(/\n$/, "");
 }
 
-function splitFields(output) {
-  return output.split("\0").filter(field => field !== "");
-}
 
 /*
  * The same change set, on stdout, as a JSON array rather than one path per

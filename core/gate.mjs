@@ -238,14 +238,19 @@ export function hookDirectory(input) {
 export async function main() {
   const [mode = "compatible"] = process.argv.slice(2);
 
-  let stdin = "";
+  /*
+   * Collected as bytes and decoded once. Appending each chunk to a string
+   * decodes that chunk on its own, so a character straddling a read boundary
+   * becomes two broken halves before the payload is ever parsed.
+   */
+  const chunks = [];
   for await (const chunk of process.stdin) {
-    stdin += chunk;
+    chunks.push(chunk);
   }
 
   let result;
   try {
-    result = handleHook(JSON.parse(stdin), mode);
+    result = handleHook(JSON.parse(Buffer.concat(chunks).toString("utf8")), mode);
   } catch {
     result = malformedInputResult();
   }

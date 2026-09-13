@@ -375,15 +375,32 @@ test("a merge base that cannot be computed is a failure, not an empty half", () 
   assert.equal(changeSetCommandOutput(repository).complete, false, "and the command says so");
 });
 
-// A repository with no base at all is legitimately empty on that half.
-test("no base to compare against is not a failure", () => {
+/*
+ * A branch with commits and no base ref to compare them against has a
+ * committed half that was never computed, not an empty one. Saying "empty"
+ * there erased every commit made in a `--single-branch` clone, or in any
+ * repository whose trunk is called something other than main or master.
+ */
+test("no base ref with commits on HEAD is a failure, not an empty half", () => {
   const repository = createRepository();
   git(repository, ["checkout", "-q", "--detach"]);
   git(repository, ["branch", "-D", "main"]);
   write(repository, "working.js", "export {};\n");
   const changes = changedPaths(repository);
-  assert.equal(changes.complete, true, "a repository with no base still collected both halves");
-  assert.deepEqual(changes.paths, ["working.js"]);
+  assert.equal(changes.complete, false, "the committed half was never computed");
+  assert.deepEqual(changes.paths, ["working.js"], "the half that was collected is still reported");
+});
+
+// A repository with no commits at all has no committed half to miss.
+test("no base ref and an unborn HEAD is an ordinary empty half", () => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "unborn-"));
+  const repository = path.join(parent, "fresh");
+  fs.mkdirSync(repository);
+  git(repository, ["init", "-q", "-b", "main", "."]);
+  fs.writeFileSync(path.join(repository, "first.js"), "export {};\n");
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, true);
+  assert.deepEqual(changes.paths, ["first.js"]);
 });
 
 /*
@@ -424,15 +441,6 @@ test("a base ref whose commit cannot be read is a failure, not a missing base", 
 });
 
 // A repository that simply has none of these refs is not a failure.
-test("no base ref at all is still an ordinary empty half", () => {
-  const repository = createRepository();
-  git(repository, ["checkout", "-q", "--detach"]);
-  git(repository, ["branch", "-D", "main"]);
-  write(repository, "working.js", "export {};\n");
-  const changes = changedPaths(repository);
-  assert.equal(changes.complete, true);
-  assert.deepEqual(changes.paths, ["working.js"]);
-});
 
 /*
  * A shallow clone does not hold the commit where two branches meet, and a
@@ -608,24 +616,6 @@ test("a working directory whose name ends in a carriage return is the one examin
   assert.deepEqual(changedPaths(plain).paths, [], "and the neighbour is untouched");
 });
 
-// The shallow check runs only where an empty merge-base answer has to be
-// judged, so the fixture has to be a branch with no common ancestor.
-test("a git killed during the shallow check is a failure, not an absence", () => {
-  const repository = createRepository();
-  git(repository, ["checkout", "-q", "--orphan", "feature"]);
-  write(repository, "committed.js", "export {};\n");
-  commit(repository, "an unrelated history");
-  const unrelated = changedPaths(repository);
-  assert.equal(unrelated.complete, true, "unrelated histories are legitimately empty on that half");
-
-  const previous = process.env.PATH;
-  process.env.PATH = `${gitThatDiesOn("rev-parse --is-shallow-repository")}:${previous}`;
-  try {
-    assert.equal(changedPaths(repository).complete, false);
-  } finally {
-    process.env.PATH = previous;
-  }
-});
 
 /*
  * `HEAD` is a legal file name, and git refuses a command whose argument is both
@@ -655,4 +645,163 @@ test("a file named like a revision does not make the committed half unreadable",
     complete: true
   });
   assert.deepEqual(changeSetCommandPaths(repository), ["HEAD", "feature.js", "refs/heads/main"]);
+});
+
+/*
+ * The shape a CI runner, a devcontainer and an agent sandbox all check out
+ * with: `--single-branch --branch <x>` writes no origin/HEAD and fetches no
+ * main. Every base candidate is then missing, and reporting that as an empty
+ * committed half erased the whole point of the branch -- silently, and with an
+ * uncommitted edit alongside it, affirmatively: one file named as the entire
+ * change set, marked complete.
+ */
+test("a single-branch clone of a trunk that is not main is not reported as unchanged", () => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "single-"));
+  const remote = path.join(parent, "remote.git");
+  const seed = path.join(parent, "seed");
+  git(parent, ["init", "-q", "--bare", "-b", "develop", remote]);
+  fs.mkdirSync(seed);
+  git(seed, ["init", "-q", "-b", "develop", "."]);
+  git(seed, ["config", "user.email", "test@example.com"]);
+  git(seed, ["config", "user.name", "Test"]);
+  fs.writeFileSync(path.join(seed, "base.txt"), "base\n");
+  git(seed, ["add", "-A"]);
+  git(seed, ["commit", "-q", "-m", "base"]);
+  git(seed, ["remote", "add", "origin", remote]);
+  git(seed, ["push", "-q", "origin", "develop"]);
+  git(seed, ["checkout", "-q", "-b", "feature"]);
+  fs.writeFileSync(path.join(seed, "src.js"), "export {};\n");
+  git(seed, ["add", "-A"]);
+  git(seed, ["commit", "-q", "-m", "the whole point of the branch"]);
+  git(seed, ["push", "-q", "origin", "feature"]);
+
+  const clone = path.join(parent, "clone");
+  git(parent, ["clone", "-q", "--single-branch", "--branch", "feature", remote, clone]);
+  assert.equal(
+    spawnSync("git", ["-C", clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]).status,
+    1,
+    "the clone really has no main to compare against"
+  );
+
+  assert.equal(changedPaths(clone).complete, false, "the committed half was never computed");
+
+  fs.appendFileSync(path.join(clone, "src.js"), "more\n");
+  const withEdit = changedPaths(clone);
+  assert.deepEqual(withEdit.paths, ["src.js"]);
+  assert.equal(withEdit.complete, false, "and the one file it can name is not the whole story");
+});
+
+/*
+ * An orphan branch has every one of its commits and no ancestor in common with
+ * its base, so which of them a reviewer would call new cannot be worked out
+ * from here. That is a list that is short, not an empty one.
+ */
+test("unrelated histories are a short list, not an empty one", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "--orphan", "feature"]);
+  git(repository, ["rm", "-q", "-rf", "."]);
+  write(repository, "orphan.js", "export {};\n");
+  commit(repository, "an unrelated history");
+
+  assert.equal(changedPaths(repository).complete, false);
+});
+
+/*
+ * git warns and still exits 0 when it cannot open part of the working tree.
+ * The listing it printed is then short of whatever it could not reach, and a
+ * clean exit code is not enough to call it whole.
+ */
+test("a listing git said was short is not reported as complete", { skip: process.getuid?.() === 0 }, () => {
+  const repository = createRepository();
+  fs.mkdirSync(path.join(repository, "locked"));
+  fs.writeFileSync(path.join(repository, "locked", "inside.js"), "export {};\n");
+  fs.writeFileSync(path.join(repository, "visible.js"), "export {};\n");
+  fs.chmodSync(path.join(repository, "locked"), 0o000);
+  try {
+    const warned = spawnSync("git", ["-C", repository, "status", "--porcelain=v1"], { encoding: "utf8" });
+    assert.equal(warned.status, 0, "git exits cleanly");
+    assert.match(warned.stderr, /could not open directory/, "and says on stderr that it could not look");
+
+    const changes = changedPaths(repository);
+    assert.equal(changes.complete, false);
+  } finally {
+    fs.chmodSync(path.join(repository, "locked"), 0o755);
+  }
+});
+
+/*
+ * Every one of these names a repository, an index or an object store, and git
+ * obeys them over the directory it was pointed at. Inherited from the host they
+ * made the plugin answer about a tree nobody asked about -- confidently, and
+ * marked complete.
+ */
+test("an inherited GIT_DIR does not redirect the answer to another repository", () => {
+  const here = createRepository();
+  const there = createRepository();
+  write(here, "mine.js", "export {};\n");
+  write(there, "theirs.js", "export {};\n");
+
+  const previous = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };
+  process.env.GIT_DIR = path.join(there, ".git");
+  process.env.GIT_WORK_TREE = there;
+  try {
+    const changes = changedPaths(here);
+    assert.equal(changes.root, here, "the repository asked about");
+    assert.deepEqual(changes.paths, ["mine.js"]);
+  } finally {
+    for (const [name, value] of [["GIT_DIR", previous.dir], ["GIT_WORK_TREE", previous.tree]]) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+});
+
+/*
+ * A file name is bytes. Decoding it as UTF-8 maps every invalid byte to the
+ * same replacement character, so two files whose names differ only there became
+ * one path and one of them vanished from the change set without a trace.
+ */
+test("two file names that are not valid UTF-8 stay two paths", () => {
+  const repository = createRepository();
+  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xff]), Buffer.from(".js")]), "1\n");
+  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xfe]), Buffer.from(".js")]), "2\n");
+
+  const changes = changedPaths(repository);
+  assert.equal(changes.paths.length, 2, `both names survive: ${JSON.stringify(changes.paths)}`);
+  assert.equal(new Set(changes.paths).size, 2, "and they are distinct");
+});
+
+// A submodule the project's own .gitmodules asks git to ignore is still a
+// change this branch made.
+test("a submodule set to ignore is still reported", () => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "sub-"));
+  const library = path.join(parent, "lib");
+  const superproject = path.join(parent, "sup");
+  for (const directory of [library, superproject]) {
+    fs.mkdirSync(directory);
+    git(directory, ["init", "-q", "-b", "main", "."]);
+    git(directory, ["config", "user.email", "test@example.com"]);
+    git(directory, ["config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(directory, "seed.txt"), "x\n");
+    git(directory, ["add", "-A"]);
+    git(directory, ["commit", "-q", "-m", "seed"]);
+  }
+  git(superproject, ["-c", "protocol.file.allow=always", "submodule", "-q", "add", library, "lib"]);
+  git(superproject, ["commit", "-q", "-m", "add the submodule"]);
+  git(superproject, ["config", "-f", ".gitmodules", "submodule.lib.ignore", "all"]);
+  git(superproject, ["add", ".gitmodules"]);
+  git(superproject, ["commit", "-q", "-m", "ignore it"]);
+
+  git(superproject, ["checkout", "-q", "-b", "feature"]);
+  fs.writeFileSync(path.join(superproject, "lib", "new.js"), "export {};\n");
+  git(path.join(superproject, "lib"), ["add", "-A"]);
+  git(path.join(superproject, "lib"), ["commit", "-q", "-m", "work in the submodule"]);
+
+  assert.ok(
+    changedPaths(superproject).paths.includes("lib"),
+    `the submodule is named: ${JSON.stringify(changedPaths(superproject).paths)}`
+  );
 });

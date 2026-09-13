@@ -265,3 +265,30 @@ test("a base ref whose commit cannot be read makes the hook speak", () => {
     "a branch with commits on it is never reported as unchanged"
   );
 });
+
+/*
+ * Both halves failing used to be indistinguishable from "this is not a
+ * repository": the change set came back null and the hook said nothing, which
+ * under this design means "nothing changed". null is for a directory that is
+ * not a repository; a repository nothing could be read from still gets an
+ * answer, and the answer admits it is empty for the wrong reason.
+ */
+test("a repository whose every half failed still makes the hook speak", { skip: process.getuid?.() === 0 }, () => {
+  const repository = createRepository();
+  const base = git(repository, ["rev-parse", "main"]).trim();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  change(repository, "committed.js");
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a commit on the branch"]);
+
+  fs.rmSync(path.join(repository, ".git", "objects", base.slice(0, 2), base.slice(2)));
+  fs.chmodSync(path.join(repository, ".git", "index"), 0o000);
+  try {
+    assert.match(
+      claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+      /could not be collected/
+    );
+  } finally {
+    fs.chmodSync(path.join(repository, ".git", "index"), 0o644);
+  }
+});
