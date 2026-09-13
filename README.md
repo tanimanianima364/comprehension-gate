@@ -135,6 +135,11 @@ npm test
 ```
 
 
+
+## Scope
+
+POSIX only. The plugin renders one shell command — the one that prints the change set — and quotes it POSIX style; it compares repository paths as git spells them, with no separator translation. Windows is out of scope: supporting it would mean a second quoting rule for a shell nobody here can run a test against, and a separator conversion that, on a POSIX host, turns a legal character in a file name into a path separator. Both were carried for a while and both are gone.
+
 ## Security boundary
 
 This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. No tool is ever refused and nothing is enforced. It does not try to stop an agent that wants to ignore it, and it accepts every residual that follows: host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code. The hook cannot tell the user's own edits from the agent's, so a change the user made themselves is reported alongside the agent's. The host hook runner and the Node executable it uses to start this plugin are part of the trusted bootstrap.

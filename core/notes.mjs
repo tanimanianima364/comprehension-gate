@@ -255,10 +255,8 @@ function coveredPath(entry) {
   return normalized === "." ? null : normalized.replace(/^\.\//, "");
 }
 
-// An OS path into repository spelling. Only a host whose separator is a
-// backslash has anything to convert; on a POSIX host a backslash in a name is
-// part of the name.
+// The repository's own spelling. This runs on POSIX only, where the separator
+// is the one git uses and a backslash in a name is part of the name.
 function repositoryPath(root, target) {
-  const relative = path.relative(root, target);
-  return path.sep === "\\" ? relative.replaceAll("\\", "/") : relative;
+  return path.relative(root, target);
 }
