@@ -579,3 +579,26 @@ test("a path that leaves the repository is still outside it", () => {
     { exitCode: 0, stdout: "", stderr: "" }
   );
 });
+
+/*
+ * A tool payload names a path as text and the change set names it as bytes.
+ * Both are spelled the same way, so an edit to the ordinary file `x%FF.js`
+ * finds the notes for that file and not for one whose name holds a raw byte.
+ */
+test("a tool path with a percent sign finds its own notes", () => {
+  const repository = createRepository();
+  // The note names the file the way it is really called; both sides escape.
+  writeNote(repository, "2026-09-13-one-a1b2c3d4", ["x%FF.js"], { title: "Why the percent is literal" });
+  fs.writeFileSync(path.join(repository, "x%FF.js"), "export {};\n");
+
+  const hint = handleHook(
+    {
+      cwd: repository,
+      hook_event_name: "PreToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: path.join(repository, "x%FF.js") }
+    },
+    "compatible"
+  );
+  assert.match(hint.stdout, /Why the percent is literal/);
+});

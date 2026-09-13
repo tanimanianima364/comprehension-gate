@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { changedPaths, repositoryRoot } from "./changes.mjs";
+import { changedPaths, encodePath, repositoryRoot } from "./changes.mjs";
 import { NOTES_DIRECTORY, notesCovering, uncoveredPaths } from "./notes.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
@@ -323,8 +323,11 @@ function repositoryRelatives(root, base, raw) {
   return names.map(name => insideRepository(root, name)).filter(name => name !== null);
 }
 
+// Spelled the way a path from git is spelled, so a tool naming the ordinary
+// file `x%FF.js` looks up the notes for that file rather than for the one
+// whose name holds a raw 0xFF.
 function insideRepository(root, absolute) {
-  const relative = path.relative(root, absolute);
+  const relative = encodePath(path.relative(root, absolute));
   // `..` as a prefix is not the same as `..` as a path segment: a file called
   // `..hidden.js` sits in the repository like any other, and rejecting it left
   // every note about it unmentioned and every write to it unreported.
