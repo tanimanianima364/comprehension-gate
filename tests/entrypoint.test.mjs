@@ -6,8 +6,6 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { createRepository } from "./helpers.mjs";
-
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("the hook entrypoint runs when the plugin root is reached through a symlink", () => {
@@ -17,7 +15,7 @@ test("the hook entrypoint runs when the plugin root is reached through a symlink
 
   const result = spawnSync(
     process.execPath,
-    [path.join(linkedRoot, "core", "gate.mjs"), "compatible"],
+    [path.join(linkedRoot, "core", "gate.mjs")],
     {
       encoding: "utf8",
       input: JSON.stringify({
@@ -33,7 +31,7 @@ test("the hook entrypoint runs when the plugin root is reached through a symlink
 
   const stopResult = spawnSync(
     process.execPath,
-    [path.join(linkedRoot, "core", "gate.mjs"), "compatible"],
+    [path.join(linkedRoot, "core", "gate.mjs")],
     {
       encoding: "utf8",
       input: JSON.stringify({ cwd: directory, hook_event_name: "Stop" })
@@ -42,25 +40,4 @@ test("the hook entrypoint runs when the plugin root is reached through a symlink
 
   assert.equal(stopResult.status, 0, stopResult.stderr);
   assert.equal(stopResult.stdout, "", "a stop never holds a turn");
-});
-
-// The whole Kiro contract is the process exit code, which only a real spawn
-// shows. It used to be 1 over a changed repository; nothing warns now, so a
-// non-zero exit here would surface to the user as a hook failure.
-test("a Kiro stop over a changed repository exits zero with nothing on stderr", () => {
-  const repository = createRepository();
-  const run = payload =>
-    spawnSync(process.execPath, [path.join(pluginRoot, "core", "gate.mjs"), "kiro"], {
-      encoding: "utf8",
-      input: JSON.stringify(payload)
-    });
-
-  const spawned = run({ hook_event_name: "agentSpawn", cwd: repository });
-  assert.equal(spawned.status, 0, spawned.stderr);
-  assert.match(spawned.stdout, /Comprehension Gate/);
-
-  fs.writeFileSync(path.join(repository, "src.js"), "export {};\n");
-  const stopped = run({ hook_event_name: "stop", cwd: repository });
-  assert.equal(stopped.status, 0, stopped.stderr);
-  assert.equal(stopped.stderr, "");
 });

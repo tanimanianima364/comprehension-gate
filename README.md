@@ -8,15 +8,14 @@ The hook interrupts no one. It refuses no tool, holds no turn, blocks no prompt,
 
 That is a deliberate trade, and it replaces an earlier design that held the turn and put a transfer question to the user. Questions that the user could not answer from shared context, and a held turn, cost more than they returned.
 
-## Supported adapters
+## Supported hosts
 
 | Agent | Hook configuration | Context reaches the agent | Verified against a running host |
 | --- | --- | --- | --- |
-| Claude Code | `hooks/hooks.json` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | yes, 2.1.270: all three injections observed reaching the model |
-| Codex | the same `hooks/hooks.json` | `SessionStart`, `PreToolUse`, `PostToolUse` | hooks yes, CLI 0.151.0/0.153.1; not re-run live for this change |
-| Cursor | Claude compatibility or `adapters/cursor/hooks.json` | `sessionStart` only | hooks yes, `cursor-agent` 2026.09.02; not re-run live for this change |
-| Kiro CLI 2.x | `adapters/kiro-2x/hooks.json`, merged into the agent config | `agentSpawn`, `userPromptSubmit`, and the tool events | hooks yes, 2.16.2; not re-run live for this change |
-| Kiro CLI 3.x | `adapters/kiro/hooks.json` | `SessionStart`, `UserPromptSubmit`, and the tool events | no |
+| Claude Code | `hooks/hooks.json` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | yes, 2.1.270: every injection observed reaching the model, in order |
+| Codex | the same `hooks/hooks.json` | `SessionStart`, `PreToolUse`, `PostToolUse` | hooks yes, CLI 0.151.0/0.153.1; not re-run live for this design |
+
+Kiro and Cursor were supported and are not any more. Both were dropped once the plugin's entire surface became the context it injects: Cursor's prompt hook carries no context field at all and its `preToolUse` is registered `failClosed`, so the one event that mattered most could not be used there without risking every tool call, and Kiro's rendering of context on a tool event was never verified. Supporting a host the design cannot actually reach costs three adapter templates, a renderer, a mode argument threaded through every result, and a per-host shape for each of them — for a gate that, on those hosts, could not do the thing it now exists to do.
 
 The last column is the honest one. Claude Code has been re-run live against this design on 2.1.270, with the hook instrumented to log every event it received. Over a repository holding one note, the order was:
 
@@ -30,11 +29,7 @@ PreToolUse  Edit  src/app.js        <- the edit comes after the note was read
 
 The agent read the note before editing, said so, and then declined to write a new note for what it judged a mechanical change — noting that the file would stay listed in the reminder, which is the designed outcome. `additionalContext` is in that release's `hookSpecificOutput` schema for `PreToolUse` and `PostToolUse` alike, and this is what it reaching the model looks like. One rough edge showed up: in a sandboxed session the change set command needs approval like any other command, so an agent that is refused falls back to reading rather than running it.
 
-The other three hosts were exercised live under the previous design, which proved that their hooks fire and that injected context arrives at session start. Nothing here changes the shape of that context, but none of them has been re-run since the interruption was removed, and whether Codex, Cursor, or Kiro render context on a *tool* event is unverified — which is why Cursor, whose `preToolUse` is `failClosed`, is left out of it entirely.
-
-Cursor is deliberately left out of the tool-event context: its `preToolUse` is registered `failClosed` and its output schema has not been verified to carry a context field, so an unrecognized field there risks failing every tool call rather than adding a hint. Cursor's prompt hook carries no context field either, so there everything reaches the agent at `sessionStart`. Whether Kiro renders context on a tool event has not been verified live; it is written the same way `agentSpawn` is, which was. A `cursor-agent --resume` turn fires no hooks at all, not even `sessionStart`. Kiro CLI 3.x has not been exercised live; that adapter was written from vendor documentation and is covered by tests that model the documented contract.
-
-The two Kiro adapters differ only in packaging. 3.x reads standalone `.kiro/hooks/*.json` files; 2.x embeds the same triggers in the agent config under `hooks`. Two details of 2.x are worth knowing because its documentation is wrong about them, and both were found by capturing real hook payloads from 2.16.2. The `matcher` is documented as a regex but is not one: only `"*"` or an omitted matcher fires for every tool, while `".*"` — the value the vendor's own example uses — fires for none. And no payload carries a session id.
+Codex discovers the same `hooks/hooks.json` and supplies `CLAUDE_PLUGIN_ROOT`; its hooks were exercised live under the previous design, but whether it renders context on a tool event has not been verified.
 
 ## How it works
 
@@ -48,7 +43,7 @@ Stop             -> allow
 
 **On timing.** A host attaches `PreToolUse` context to the *tool's result*, so a hint on an `Edit` reaches the agent only after that edit has run. That is why the hint fires on reads as well as writes — the read that precedes an edit is where it still arrives in time — and why the instructions tell the agent to look a file's notes up itself before changing it rather than waiting to be told. The hook is the backstop, not the plan. Making it arrive first would mean `permissionDecision: "ask"` or a deny, which is the blocking this design removed.
 
-A tool event resolves a path when the tool's name looks like it writes (`/write|edit|patch|create|update|append|insert|delete|remove|move|rename/i`) or, for the hint only, reads (`/read|view|open|cat|inspect|grep|search/i`), and when its input carries one: `file_path`, `filePath`, `path`, `notebook_path`, every entry of Kiro's `operations`, or the `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** Move to:` headers of a Codex `apply_patch` envelope — read as the structured format it is, never as a shell command to be parsed. The *directory* resolves through the same real path the repository root resolves through, so a working directory reached by a symlink does not put every file in it outside the repository. A symlinked file answers to two names and both are looked up: git tracks the link under its own name, which is what a deletion touches and where its notes are filed, while a write through the link changes the target, which is the file git will report as changed. A path's notes are looked up for the whole list at once, so the notes tree is read once per hook invocation rather than once per path. A name proves nothing across hosts, which is why the plugin's old control protocol refused to trust one; that decision gated the gate, while this one only decides whether to offer a hint, so a pattern that catches every host's spelling beats a list that misses new ones. A write made through an ordinary shell command carries no path to resolve and gets neither event; it still appears in the reminder at the next user message.
+A tool event resolves a path when the tool's name looks like it writes (`/write|edit|patch|create|update|append|insert|delete|remove|move|rename/i`) or, for the hint only, reads (`/read|view|open|cat|inspect|grep|search/i`), and when its input carries one: `file_path`, `filePath`, `path`, `notebook_path`, or the `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** Move to:` headers of a Codex `apply_patch` envelope — read as the structured format it is, never as a shell command to be parsed. The *directory* resolves through the same real path the repository root resolves through, so a working directory reached by a symlink does not put every file in it outside the repository. A symlinked file answers to two names and both are looked up: git tracks the link under its own name, which is what a deletion touches and where its notes are filed, while a write through the link changes the target, which is the file git will report as changed. A path's notes are looked up for the whole list at once, so the notes tree is read once per hook invocation rather than once per path. A name proves nothing across hosts, which is why the plugin's old control protocol refused to trust one; that decision gated the gate, while this one only decides whether to offer a hint, so a pattern that catches every host's spelling beats a list that misses new ones. A write made through an ordinary shell command carries no path to resolve and gets neither event; it still appears in the reminder at the next user message.
 
 The change set is everything this branch has done that its base has not: every path committed since the merge base with the default branch, plus every path `git status --porcelain=v1 -z --untracked-files=all` reports in the working tree. That is the same set a reviewer sees in the pull request, and it is the range a record has to cover.
 
@@ -70,7 +65,7 @@ A listing command is not trusted on its exit code alone: `git status` warns on s
 
 git's output is read with a limit no realistic branch reaches. Node's default is a megabyte — about six thousand paths — and it kills the child and throws past that, so a branch with a large committed diff used to come back empty and report nothing at all, working-tree edits included. A half that still cannot be collected leaves the other one reported, and the notice says the list is short rather than passing it off as complete. A branch with commits and no base ref at all does not have an empty committed half — it has one that was never computed, and it says so. That shape is not exotic: `git clone --single-branch --branch <x>` writes no `origin/HEAD` and fetches no `main`, which is how CI runners, devcontainers and agent sandboxes check out, and any repository whose trunk is called something else is in the same position. A repository with no commits yet is the genuinely empty case. Unrelated histories are a short list too: the branch has every one of its commits and which of them a reviewer would call new cannot be worked out from here. Renames name both paths, because a record attached to the old path has to follow — and both status columns are tested for the rename, since `git mv` stages it as `R ` while a plain move plus `git add -N` reports ` R`, and reading only the first column would leave the original path to be parsed as the next entry's status line. Ignored files are in neither half, so a scratch file under a gitignored directory is free. A directory that is not a git repository, or a repository git cannot be asked about, produces no notice rather than a guess.
 
-Only the hook's own working directory is examined — `cwd`, or the first entry of Cursor's `workspace_roots`. Other worktrees of the same repository are not watched. They were, under the previous design, because a held turn invited relocating a change to escape it; with nothing to escape, the branch being worked in is the branch a record belongs to.
+Only the hook's own working directory is examined. Other worktrees of the same repository are not watched. They were, under the previous design, because a held turn invited relocating a change to escape it; with nothing to escape, the branch being worked in is the branch a record belongs to.
 
 Nothing is remembered between hook invocations. There is no state file, no baseline, no session identity, and no notion of a change having been accounted for: the notice is always the branch's current change set. A change accounted for in an earlier turn is still listed while it remains on the branch, and does not need accounting for twice.
 
@@ -129,31 +124,9 @@ To load the working tree directly during development instead:
 claude --plugin-dir /absolute/path/to/comprehension-gate
 ```
 
+Updating changes the hook command definitions, and Codex will not run a hook whose definition changed until it is approved again: after an update, open an interactive session and re-approve with `/hooks`.
+
 Codex discovers `hooks/hooks.json` from the plugin root after the plugin is installed and trusted. Until they are trusted, Codex skips the plugin's hooks **silently**: no warning on stderr and nothing at `RUST_LOG=trace`, so an untrusted install is indistinguishable from a working one that never fires. `codex exec` cannot grant trust. Run an interactive session, which reports `Hooks need review`, and trust them there; that writes a `trusted_hash` for each hook into `config.toml`. Use `/hooks` to review and trust the exact hook definition.
-
-Cursor can reuse the Claude hook configuration when third-party plugins/configs are enabled. For a native Cursor configuration, render the template to a new file and merge it into the target project if that file already exists:
-
-```bash
-node scripts/render-adapter.mjs cursor --output /project/.cursor/hooks.json
-```
-
-For Kiro CLI 2.x, render the fragment and merge its `hooks` object into the agent config the session runs with, whether that is a global agent in `~/.kiro/agents/<name>.json` or a workspace one:
-
-```bash
-node scripts/render-adapter.mjs kiro-2x
-kiro-cli agent validate --path ~/.kiro/agents/<name>.json
-```
-
-Merge rather than overwrite: an agent config holds far more than hooks, and an existing `hooks` object may already carry entries of its own. Keep the `"matcher": "*"` on every trigger.
-
-For Kiro CLI 3.x:
-
-```bash
-node scripts/render-adapter.mjs kiro --output /project/.kiro/hooks/comprehension-gate.json
-kiro-cli diagnostic
-```
-
-The renderer encodes the absolute entrypoint as a base64url argument and uses a fixed Node bootstrap, so plugin-path bytes are never interpreted as shell syntax. It refuses to overwrite an existing file unless `--force` is explicitly supplied. Prefer merging when a project already has hooks.
 
 ## Verification
 
@@ -164,12 +137,9 @@ npm test
 
 ## Security boundary
 
-This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. No tool is ever refused and nothing is enforced. It does not try to stop an agent that wants to ignore it, and it accepts every residual that follows: host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code. The hook cannot tell the user's own edits from the agent's, so a change the user made themselves is reported alongside the agent's. The host hook runner and the Node executable it uses to start this plugin are part of the trusted bootstrap; adapter bootstrap commands require a trusted launch environment.
+This plugin is a learning workflow guardrail, not a sandbox or authorization boundary. No tool is ever refused and nothing is enforced. It does not try to stop an agent that wants to ignore it, and it accepts every residual that follows: host permissions still apply, and specialized tool paths that do not emit the configured hook event cannot be intercepted by this code. The hook cannot tell the user's own edits from the agent's, so a change the user made themselves is reported alongside the agent's. The host hook runner and the Node executable it uses to start this plugin are part of the trusted bootstrap.
 
 Current primary references:
 
 - [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [Codex hooks](https://learn.chatgpt.com/docs/hooks)
-- [Cursor hooks](https://cursor.com/docs/hooks)
-- [Kiro CLI hooks](https://kiro.dev/docs/cli/hooks/)
-- [Kiro built-in tools](https://kiro.dev/docs/reference/built-in-tools/)

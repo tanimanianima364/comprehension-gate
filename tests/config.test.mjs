@@ -1,41 +1,37 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { adapterCommand, buildEntrypointCommand } from "../core/command.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("plugin manifests and hook configurations are valid JSON", () => {
-  const files = [
+test("plugin manifests and the hook configuration are valid JSON", () => {
+  for (const relativePath of [
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",
-    "hooks/hooks.json",
-    "adapters/cursor/hooks.json",
-    "adapters/kiro/hooks.json"
-  ];
-  for (const relativePath of files) {
-    assert.doesNotThrow(
-      () => JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8")),
-      relativePath
-    );
+    "hooks/hooks.json"
+  ]) {
+    assert.doesNotThrow(() => readJson(relativePath), relativePath);
   }
 });
 
-test("shared hook config covers session start, prompt, tool use, and stop", () => {
+test("the hook config covers session start, prompt, and both tool events", () => {
   const config = readJson("hooks/hooks.json");
-  assert.ok(config.hooks.SessionStart);
-  assert.ok(config.hooks.UserPromptSubmit);
-  assert.ok(config.hooks.PostToolUse);
-  assert.ok(config.hooks.Stop);
-  // Every event shells out to git, so none may be killed before git's own timeout.
-  assert.equal(config.hooks.SessionStart[0].hooks[0].timeout, 20);
-  assert.equal(config.hooks.UserPromptSubmit[0].hooks[0].timeout, 20);
-  assert.equal(config.hooks.Stop[0].hooks[0].timeout, 20);
+  assert.deepEqual(Object.keys(config.hooks), [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse"
+  ]);
+  for (const [event, entries] of Object.entries(config.hooks)) {
+    // Every event shells out to git, so none may be killed before git's own timeout.
+    assert.equal(entries[0].hooks[0].timeout, 20, event);
+    assert.doesNotMatch(entries[0].hooks[0].command, /gate\.mjs" \w/, `${event}: no mode argument`);
+  }
+  // An omitted matcher is what routes built-in, MCP, and unknown tools alike.
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
+  assert.equal("matcher" in config.hooks.PostToolUse[0], false);
 });
 
 // The skill used to carry its own `git merge-base HEAD origin/HEAD` one-liner,
@@ -50,125 +46,6 @@ test("the manual skill defers to the session instructions for the change set", (
   assert.match(skill, /change set command the active Comprehension Gate session instructions supply/);
 });
 
-test("native adapters register the stop event the way each host spells it", () => {
-  const cursor = readJson("adapters/cursor/hooks.json");
-  assert.equal(cursor.hooks.stop[0].loop_limit, 1);
-  const kiro = readJson("adapters/kiro/hooks.json");
-  assert.ok(kiro.hooks.find(hook => hook.trigger === "Stop"));
-  const kiro2 = readJson("adapters/kiro-2x/hooks.json");
-  assert.ok(kiro2.hooks.stop);
-});
-
-test("native PreToolUse adapters route unknown and MCP tools", () => {
-  const cursor = readJson("adapters/cursor/hooks.json");
-  const cursorPreToolUse = cursor.hooks.preToolUse[0];
-  assert.equal("matcher" in cursorPreToolUse, false);
-  assert.equal("matcher" in cursor.hooks.postToolUse[0], false);
-
-  const kiro = readJson("adapters/kiro/hooks.json");
-  const kiroPreToolUse = kiro.hooks.find(hook => hook.trigger === "PreToolUse");
-  const kiroPostToolUse = kiro.hooks.find(hook => hook.trigger === "PostToolUse");
-  assert.equal(kiroPreToolUse.matcher, "*");
-  assert.equal(kiroPostToolUse.matcher, "*");
-});
-
-test("native adapter templates use only the documented placeholder", () => {
-  for (const provider of ["cursor", "kiro"]) {
-    const raw = fs.readFileSync(path.join(root, "adapters", provider, "hooks.json"), "utf8");
-    assert.match(raw, /__COMPREHENSION_GATE_COMMAND__/);
-    assert.doesNotMatch(raw, /\/home\/|[A-Z]:\\\\/);
-  }
-});
-
-test("adapter renderer emits portable, placeholder-free JSON", () => {
-  for (const provider of ["cursor", "kiro"]) {
-    const result = spawnSync(
-      process.execPath,
-      [path.join(root, "scripts", "render-adapter.mjs"), provider, "--root", root],
-      { encoding: "utf8" }
-    );
-    assert.equal(result.status, 0, result.stderr);
-    assert.doesNotMatch(result.stdout, /__COMPREHENSION_GATE_COMMAND__/);
-    const config = JSON.parse(result.stdout);
-    const command = adapterCommandFromConfig(provider, config);
-    const parsed = parseEntrypointCommand(command);
-    assert.equal(parsed.entrypoint, path.join(root, "core", "gate.mjs"));
-    assert.equal(parsed.argument, provider);
-    assert.doesNotMatch(command, /core[\\/]gate\.mjs/);
-  }
-});
-
-test("entrypoint command builders reject unencoded shell arguments", () => {
-  assert.throws(() => buildEntrypointCommand("", "pass"), /non-empty/);
-  assert.throws(
-    () => buildEntrypointCommand("/plugin/core/gate.mjs", "pass && mutate"),
-    /shell syntax/
-  );
-  assert.throws(() => adapterCommand("unknown", "/plugin"), /Unsupported adapter/);
-});
-
-test("adapter renderer safely executes roots with shell metacharacters", () => {
-  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-render-"));
-  const sentinel = path.join(sandbox, "renderer-sentinel");
-  const fixtureParent = path.join(sandbox, "node_modules");
-  fs.mkdirSync(fixtureParent);
-  const specialRoot = path.join(
-    fixtureParent,
-    "plugin-`touch${IFS}renderer-sentinel`-$-'single'-\"double\""
-  );
-  fs.mkdirSync(specialRoot);
-  fs.cpSync(path.join(root, "core"), path.join(specialRoot, "core"), {
-    recursive: true
-  });
-
-  for (const provider of ["cursor", "kiro"]) {
-    const render = spawnSync(
-      process.execPath,
-      [path.join(root, "scripts", "render-adapter.mjs"), provider, "--root", specialRoot],
-      { encoding: "utf8" }
-    );
-    assert.equal(render.status, 0, render.stderr);
-    const config = JSON.parse(render.stdout);
-    const command = provider === "cursor"
-      ? config.hooks.sessionStart[0].command
-      : config.hooks.find(hook => hook.trigger === "SessionStart").action.command;
-    const input = provider === "cursor"
-      ? { conversation_id: "quoted-cursor", hook_event_name: "sessionStart" }
-      : { session_id: "quoted-kiro", hook_event_name: "SessionStart" };
-    const childEnv = { ...process.env };
-    delete childEnv.NODE_V8_COVERAGE;
-    const run = spawnSync(command, {
-      cwd: sandbox,
-      encoding: "utf8",
-      env: childEnv,
-      input: JSON.stringify(input),
-      shell: "/bin/sh"
-    });
-
-    assert.equal(run.status, 0, `${provider}: ${run.stderr}`);
-    assert.match(run.stdout, /Comprehension Gate/, provider);
-    assert.equal(fs.existsSync(sentinel), false, `${provider}: command substitution ran`);
-  }
-});
-
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }
-
-function adapterCommandFromConfig(provider, config) {
-  return provider === "cursor"
-    ? config.hooks.sessionStart[0].command
-    : config.hooks.find(hook => hook.trigger === "SessionStart").action.command;
-}
-
-function parseEntrypointCommand(command) {
-  const match = command.match(/^node -e "([^"]+)" ([A-Za-z0-9_-]+) ([A-Za-z0-9_-]+)$/);
-  assert.ok(match, command);
-  return {
-    bootstrap: match[1],
-    entrypoint: Buffer.from(match[2], "base64url").toString("utf8"),
-    argument: match[3]
-  };
-}
-
-

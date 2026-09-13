@@ -1,5 +1,5 @@
 {
-  "description": "Enforce comprehension gates before project mutation",
+  "description": "Surface what a change still has to record, without interrupting",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\"",
             "timeout": 20
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\"",
             "timeout": 20
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\"",
             "timeout": 20
           }
         ]
@@ -40,18 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
-            "timeout": 20
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\" compatible",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/core/gate.mjs\"",
             "timeout": 20
           }
         ]

@@ -8,8 +8,6 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test",
-    "render:cursor": "node scripts/render-adapter.mjs cursor",
-    "render:kiro": "node scripts/render-adapter.mjs kiro"
+    "test": "node --test"
   }
 }
