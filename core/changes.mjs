@@ -18,34 +18,60 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const GIT_TIMEOUT_MS = 10_000;
+/*
+ * Node kills the child and throws once git's output passes maxBuffer, whose
+ * default is 1 MiB -- about six thousand paths. A branch that large is not
+ * exotic in a monorepo, and the failure is silent: the change set comes back
+ * empty and nothing is ever reported. The limit is raised to something no
+ * realistic branch reaches, and the two halves are collected separately so
+ * exceeding it on one still leaves the other.
+ */
+const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 // Ordered by how well each ref answers "what will this branch be reviewed
 // against": the remote's own default branch first, then its usual names, then
 // the local ones for a repository that has no remote at all.
 const BASE_CANDIDATES = ["origin/main", "origin/master", "main", "master"];
 
-function git(directory, args) {
+function git(directory, args, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
   return execFileSync("git", ["-C", directory, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: GIT_TIMEOUT_MS
+    timeout: GIT_TIMEOUT_MS,
+    maxBuffer
   });
 }
 
-export function changedPaths(directory) {
+export function changedPaths(directory, options = {}) {
   if (typeof directory !== "string" || !path.isAbsolute(directory)) {
     return null;
   }
 
+  const maxBuffer = options.maxBuffer ?? GIT_MAX_OUTPUT_BYTES;
   let root;
   try {
-    root = fs.realpathSync(git(directory, ["rev-parse", "--show-toplevel"]).trim());
+    root = fs.realpathSync(git(directory, ["rev-parse", "--show-toplevel"], maxBuffer).trim());
   } catch {
     return null;
   }
 
+  const committed = attempt(() => committedPaths(root, maxBuffer));
+  const working = attempt(() => workingTreePaths(root, maxBuffer));
+  if (committed === null && working === null) {
+    return null;
+  }
+  const paths = new Set([...(committed ?? []), ...(working ?? [])]);
+  return {
+    root,
+    paths: [...paths].sort(),
+    // One half that could not be collected leaves the other reported rather
+    // than nothing, but the list is then short of something and says so.
+    complete: committed !== null && working !== null
+  };
+}
+
+function attempt(collect) {
   try {
-    const paths = new Set([...committedPaths(root), ...workingTreePaths(root)]);
-    return { root, paths: [...paths].sort() };
+    return collect();
   } catch {
     return null;
   }
@@ -56,7 +82,7 @@ export function changedPaths(directory) {
  * branch yet, or a HEAD with no common ancestor, still has a working tree,
  * and reporting that half alone is better than reporting nothing.
  */
-function committedPaths(root) {
+function committedPaths(root, maxBuffer) {
   const base = resolveBase(root);
   if (base === null) {
     return [];
@@ -69,7 +95,9 @@ function committedPaths(root) {
   }
   // --no-renames so a renamed file is reported as both a deletion and an
   // addition, matching how the working tree half names both paths.
-  return splitFields(git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD"]));
+  return splitFields(
+    git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD"], maxBuffer)
+  );
 }
 
 /*
@@ -115,9 +143,9 @@ function originHead(root) {
  * as the next entry's status line -- which drops it and invents a path out of
  * its last characters.
  */
-function workingTreePaths(root) {
+function workingTreePaths(root, maxBuffer) {
   const fields = splitFields(
-    git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], maxBuffer)
   );
   const paths = [];
   for (let index = 0; index < fields.length; index += 1) {

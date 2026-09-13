@@ -42,7 +42,7 @@ test("a directory outside any repository has no change set", () => {
 
 test("a clean default branch has changed nothing", () => {
   const repository = createRepository();
-  assert.deepEqual(changedPaths(repository), { root: repository, paths: [] });
+  assert.deepEqual(changedPaths(repository), { root: repository, paths: [], complete: true });
 });
 
 test("uncommitted edits, additions, and deletions are the change set; ignored files are not", () => {
@@ -142,7 +142,8 @@ test("the change set is found from a subdirectory and named relative to the repo
 
   assert.deepEqual(changedPaths(path.join(repository, "nested", "deep")), {
     root: repository,
-    paths: ["nested/deep/src.js"]
+    paths: ["nested/deep/src.js"],
+    complete: true
   });
 });
 
@@ -271,4 +272,54 @@ test("the rendered command runs in a POSIX shell and is spelled for PowerShell t
 
   assert.ok(powershell.startsWith("& "), powershell);
   assert.ok(powershell.includes("plug in''s dir"), "PowerShell doubles a single quote to escape it");
+});
+
+/*
+ * Node kills git and throws once its output passes maxBuffer, whose default is
+ * a megabyte -- about six thousand paths. Collected together, exceeding it on
+ * the committed half took the working tree with it and the change set came
+ * back empty with nothing reported at all. The halves are collected
+ * separately now, and a short list says it is short.
+ */
+test("a committed half too large to collect still leaves the working tree reported", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  for (let index = 0; index < 40; index += 1) {
+    write(repository, `committed-${index}-with-a-name-long-enough-to-fill-a-buffer.js`, "x\n");
+  }
+  commit(repository, "many files");
+  write(repository, "working.js", "export {};\n");
+
+  const whole = changedPaths(repository);
+  assert.equal(whole.complete, true);
+  assert.equal(whole.paths.length, 41);
+
+  const clipped = changedPaths(repository, { maxBuffer: 64 });
+  assert.deepEqual(clipped.paths, ["working.js"]);
+  assert.equal(clipped.complete, false, "a half that could not be collected is admitted, not hidden");
+});
+
+test("a repository git cannot read at all still has no change set", () => {
+  const repository = createRepository();
+  write(repository, "src.js", "export {};\n");
+  assert.equal(changedPaths(repository, { maxBuffer: 1 }), null);
+});
+
+/*
+ * PowerShell recognizes four more characters as single quotes than the ASCII
+ * one, and any of them ends a single-quoted string. A plugin under a directory
+ * named with a typographic apostrophe would terminate its own argument.
+ */
+test("every character PowerShell reads as a single quote is escaped", () => {
+  const text = renderInstructions({
+    runtime: "/usr/bin/node",
+    changes: "/home/O\u2019Connor/it\u2018s/\u201aodd\u201b/core/changes.mjs"
+  });
+  const powershell = text.match(/^PowerShell: (.+)$/m)[1];
+  assert.ok(powershell.includes("O\u2019\u2019Connor"), powershell);
+  assert.ok(powershell.includes("it\u2018\u2018s"), powershell);
+  assert.ok(powershell.includes("\u201a\u201aodd\u201b\u201b"), powershell);
+
+  const posix = text.match(/^POSIX shell: (.+)$/m)[1];
+  assert.ok(posix.includes("O\u2019Connor"), "a POSIX shell reads only the ASCII quote");
 });

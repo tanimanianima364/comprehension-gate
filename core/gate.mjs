@@ -55,9 +55,16 @@ function posixQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-// PowerShell single-quoting is literal too, and doubles a quote to escape it.
+/*
+ * PowerShell single-quoting is literal too, and doubles a quote to escape it --
+ * but it recognizes four more characters as single quotes than the ASCII one,
+ * and any of them ends the string. A plugin under a directory named with a
+ * typographic apostrophe would otherwise terminate its own argument.
+ */
+const POWERSHELL_QUOTES = /['\u2018\u2019\u201a\u201b]/g;
+
 function powerShellQuote(value) {
-  return `'${value.replaceAll("'", "''")}'`;
+  return `'${value.replaceAll(POWERSHELL_QUOTES, match => match + match)}'`;
 }
 
 export function handleHook(input, mode = "compatible") {
@@ -111,8 +118,11 @@ function changeNotice(input) {
   if (changes === null || changes.paths.length === 0) {
     return null;
   }
+  const short = changes.complete
+    ? ""
+    : " Part of the change set could not be collected, so this list is short of something.";
   return [
-    `Comprehension Gate: this branch has changed ${listPaths(changes.paths)}.`,
+    `Comprehension Gate: this branch has changed ${listPaths(changes.paths)}.${short}`,
     "Account for the change at its level before finishing: a mechanical change needs nothing,",
     "and anything above that needs a short insight about the convention or principle the change touched.",
     "Nothing holds the turn and the user is shown no warning, so this reminder is the only notice you get."
