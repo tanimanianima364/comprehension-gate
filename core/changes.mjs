@@ -30,7 +30,18 @@ const GIT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 // Ordered by how well each ref answers "what will this branch be reviewed
 // against": the remote's own default branch first, then its usual names, then
 // the local ones for a repository that has no remote at all.
-const BASE_CANDIDATES = ["origin/main", "origin/master", "main", "master"];
+// Fully qualified, because git resolves a short name against tags first: a tag
+// named `main` would otherwise become the base and the branch's own commits
+// would vanish from the change set.
+const MISSING = "missing";
+const PRESENT = "present";
+const UNREADABLE = "unreadable";
+const BASE_CANDIDATES = [
+  "refs/remotes/origin/main",
+  "refs/remotes/origin/master",
+  "refs/heads/main",
+  "refs/heads/master"
+];
 
 function git(directory, args, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
   return execFileSync("git", ["-C", directory, ...args], {
@@ -52,7 +63,10 @@ export function changedPaths(directory, options = {}) {
   const maxBuffer = options.maxBuffer ?? GIT_MAX_OUTPUT_BYTES;
   let root;
   try {
-    root = fs.realpathSync(git(directory, ["rev-parse", "--show-toplevel"], maxBuffer).trim());
+    // Only the terminating newline: a directory whose name ends in a space is
+    // a different directory, and trimming it examines someone else's
+    // repository and reports its change set as this one's.
+    root = fs.realpathSync(withoutNewline(git(directory, ["rev-parse", "--show-toplevel"], maxBuffer)));
   } catch {
     return null;
   }
@@ -101,7 +115,15 @@ function committedPaths(root, maxBuffer) {
   try {
     mergeBase = git(root, ["merge-base", "HEAD", base]).trim();
   } catch (error) {
-    if (error?.status === 1 && String(error.stderr ?? "") === "") {
+    /*
+     * Exit 1 with nothing on stderr is git's answer for "these histories have
+     * no common ancestor" -- and also what it says when a shallow clone simply
+     * does not hold the commit where they meet, since a shallow boundary looks
+     * like a commit with no parents. The first is legitimately empty; the
+     * second is a branch whose whole committed half is missing from the
+     * answer, so a shallow repository is asked about before believing it.
+     */
+    if (error?.status === 1 && String(error.stderr ?? "") === "" && !isShallow(root, maxBuffer)) {
       return [];
     }
     throw error;
@@ -131,32 +153,59 @@ function committedPaths(root, maxBuffer) {
 function resolveBase(root, maxBuffer) {
   let unreadable = null;
   for (const candidate of [originHead(root, maxBuffer), ...BASE_CANDIDATES]) {
-    if (candidate === null || !refExists(root, candidate, maxBuffer)) {
+    if (candidate === null) {
       continue;
     }
-    if (resolvesToCommit(root, candidate, maxBuffer)) {
+    const state = refState(root, candidate, maxBuffer);
+    if (state === PRESENT) {
       return candidate;
     }
-    unreadable = candidate;
+    if (state === UNREADABLE) {
+      unreadable = candidate;
+    }
   }
   if (unreadable !== null) {
-    throw new Error(`The base ref ${unreadable} names a commit that could not be read.`);
+    throw new Error(`The base ref ${unreadable} could not be read.`);
   }
   return null;
 }
 
-function refExists(root, candidate, maxBuffer) {
-  return succeeds(() => git(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer));
+/*
+ * Three answers, not two. A ref that is not there is ordinary -- most
+ * repositories have only some of these. A ref file git could not read, and a
+ * ref whose commit object is gone, are failures that have to reach the caller,
+ * because reporting either as "no base" says a branch with commits on it has
+ * none.
+ *
+ * git separates the first two by what it writes rather than by exit code: a
+ * missing ref says nothing, a broken one warns. The third needs a second
+ * question, because asking for `<ref>^{commit}` answers 1 with an empty stderr
+ * whether the ref is absent or its object is unreadable; asking for the bare
+ * ref reads the ref file alone and succeeds even then.
+ */
+function refState(root, candidate, maxBuffer) {
+  const named = attemptGit(() => git(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer));
+  if (!named.ok) {
+    return named.stderr === "" ? MISSING : UNREADABLE;
+  }
+  const commit = attemptGit(() =>
+    git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer)
+  );
+  return commit.ok ? PRESENT : UNREADABLE;
 }
 
-function resolvesToCommit(root, candidate, maxBuffer) {
-  return succeeds(() => git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer));
-}
-
-function succeeds(call) {
+function attemptGit(call) {
   try {
     call();
-    return true;
+    return { ok: true, stderr: "" };
+  } catch (error) {
+    return { ok: false, stderr: String(error?.stderr ?? "") };
+  }
+}
+
+function isShallow(root, maxBuffer) {
+  try {
+    return git(root, ["rev-parse", "--is-shallow-repository"], maxBuffer).trim() === "true";
   } catch {
     return false;
   }
@@ -206,6 +255,10 @@ function workingTreePaths(root, maxBuffer) {
 
 function isRenameOrCopy(status) {
   return status === "R" || status === "C";
+}
+
+function withoutNewline(output) {
+  return output.replace(/\r?\n$/, "");
 }
 
 function splitFields(output) {

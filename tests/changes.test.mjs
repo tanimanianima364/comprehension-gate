@@ -433,3 +433,102 @@ test("no base ref at all is still an ordinary empty half", () => {
   assert.equal(changes.complete, true);
   assert.deepEqual(changes.paths, ["working.js"]);
 });
+
+/*
+ * A shallow clone does not hold the commit where two branches meet, and a
+ * shallow boundary looks to git like a commit with no parents -- so merge-base
+ * answers exactly as it does for genuinely unrelated histories, 1 with nothing
+ * on stderr. Believing it reported a branch's whole committed half as absent.
+ */
+test("a shallow clone that cannot reach the merge base is a failure", () => {
+  const upstream = createRepository();
+  write(upstream, "second.js", "export {};\n");
+  commit(upstream, "a second commit to be cut off");
+  git(upstream, ["checkout", "-q", "-b", "feature"]);
+  write(upstream, "feature.js", "export {};\n");
+  commit(upstream, "a commit on the branch");
+
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "shallow-"));
+  const repository = path.join(parent, "clone");
+  git(parent, ["clone", "-q", "--depth=1", "--no-single-branch", "--branch", "feature", `file://${upstream}`, repository]);
+  git(repository, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+  assert.equal(git(repository, ["rev-parse", "--is-shallow-repository"]).trim(), "true");
+
+  const shallow = changedPaths(repository);
+  assert.equal(shallow.complete, false, "a branch's committed half is missing, not empty");
+
+  git(repository, ["fetch", "-q", "--unshallow"]);
+  assert.deepEqual(changedPaths(repository), {
+    root: fs.realpathSync(repository),
+    paths: ["feature.js"],
+    complete: true
+  });
+});
+
+/*
+ * git resolves a short ref name against tags first, so a tag named `main`
+ * became the base and the branch's own commits vanished from the change set.
+ * The candidates are fully qualified for that reason.
+ */
+test("a tag sharing a branch's name is never the base", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  write(repository, "feature.js", "export {};\n");
+  commit(repository, "a commit on the branch");
+  const expected = { root: repository, paths: ["feature.js"], complete: true };
+  assert.deepEqual(changedPaths(repository), expected);
+
+  git(repository, ["tag", "main"]);
+  assert.deepEqual(changedPaths(repository), expected, "tagging changed nothing about the branch");
+});
+
+/*
+ * A directory whose name ends in a space is a different directory. Trimming
+ * git's output examined the neighbour instead and reported its change set as
+ * this one's -- not a failure, a wrong answer.
+ */
+test("a working directory whose name ends in a space is the one examined", () => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "space-"));
+  const plain = path.join(parent, "repo");
+  const spaced = path.join(parent, "repo ");
+  for (const directory of [plain, spaced]) {
+    fs.mkdirSync(directory);
+    git(directory, ["init", "-q", "-b", "main", "."]);
+    git(directory, ["config", "user.email", "test@example.com"]);
+    git(directory, ["config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(directory, "seed.txt"), "x\n");
+    git(directory, ["add", "-A"]);
+    git(directory, ["commit", "-q", "-m", "seed"]);
+  }
+  fs.writeFileSync(path.join(spaced, "working.js"), "export {};\n");
+
+  assert.deepEqual(changedPaths(spaced), {
+    root: fs.realpathSync(spaced),
+    paths: ["working.js"],
+    complete: true
+  });
+  assert.deepEqual(changedPaths(plain).paths, [], "and the neighbour is untouched");
+});
+
+/*
+ * A ref file git cannot read is a failure, and it says so -- a missing ref
+ * says nothing at all. Both exit 1, so the warning is the only difference.
+ */
+test("a broken ref file is a failure, not a missing ref", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  write(repository, "feature.js", "export {};\n");
+  commit(repository, "a commit on the branch");
+  assert.equal(changedPaths(repository).complete, true);
+
+  fs.writeFileSync(path.join(repository, ".git", "refs", "heads", "main"), "garbage\n");
+  const lookup = spawnSync("git", ["-C", repository, "rev-parse", "--verify", "--quiet", "refs/heads/main"], {
+    encoding: "utf8"
+  });
+  assert.equal(lookup.status, 1, "git fails the way a missing ref does");
+  assert.notEqual(lookup.stderr, "", "but warns, which a missing ref does not");
+
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, false);
+  assert.equal(changeSetCommandOutput(repository).complete, false, "and the command says so");
+});
