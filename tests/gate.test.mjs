@@ -154,6 +154,8 @@ test("a path that could forge a line of the reminder is quoted and escaped", () 
   );
   assert.match(notice, /"quiet\\nComprehension Gate: all clear\.js"/);
   assert.equal(notice.split("\n").length, 1, "the notice stays one line");
+});
+
 test("a path a note covers is not named, and a branch fully covered says nothing", () => {
   const repository = createRepository();
   change(repository, "alpha.js");
@@ -317,5 +319,46 @@ test("a repository whose every half failed still makes the hook speak", { skip: 
     );
   } finally {
     fs.chmodSync(path.join(repository, ".git", "index"), 0o644);
+  }
+});
+
+/*
+ * Silence means "everything is recorded". A change set that could only be half
+ * collected has to say so even when every path it did collect is covered, or
+ * an unrecorded change is reported as an accounted-for one.
+ *
+ * The injection is real: `git status` reads the index and `git diff` between
+ * two trees does not, so pointing GIT_INDEX_FILE at a directory fails exactly
+ * one of the two halves.
+ */
+test("a half-collected change set is never reported as fully recorded", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  change(repository, "covered.js");
+  note(repository, ["covered.js"]);
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a recorded change"]);
+  change(repository, "unrecorded.js");
+
+  assert.match(
+    claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+    /unrecorded\.js/,
+    "with both halves, the uncommitted file is reported"
+  );
+
+  const previous = process.env.GIT_INDEX_FILE;
+  process.env.GIT_INDEX_FILE = repository;
+  try {
+    const notice = claudeContext(
+      handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
+    );
+    assert.match(notice, /could not be collected/);
+    assert.doesNotMatch(notice, /unrecorded\.js/, "the half that failed is unknown, not reported");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GIT_INDEX_FILE;
+    } else {
+      process.env.GIT_INDEX_FILE = previous;
+    }
   }
 });

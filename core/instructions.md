@@ -63,7 +63,13 @@ The shape of the implementation and the intent behind it: what each piece is
 responsible for, and which parts are load-bearing rather than incidental.
 ```
 
-`covers` is the only part read by a machine, so it has to be exact: repository-relative paths, one per changed path the note accounts for. A path missing from every note's `covers` stays in the reminder. Do not cover a path the note does not actually explain, and never widen `covers` to silence the reminder.
+`covers` is the only part read by a machine, so its shape is fixed and small. The key is on a line of its own, spelled `covers:` and nothing else. Each entry is a line of `  - ` followed by one repository-relative path, **taken literally to the end of the line**: no quoting, no escaping, no inline `[a, b]`, no comments. Every character is part of the name, so a path holding a quote, a comma, a `#` or a backslash is written plainly and matched exactly as git spells it.
+
+The list is read whole or not at all. A blank line between entries is fine and the next key ends it; any other line — a continuation, a comment, a dash with nothing after it — makes the note cover nothing, rather than covering whatever was read before it. Do not cover a path the note does not actually explain, and never widen `covers` to silence the reminder.
+
+A note counts only for the change it is part of. A note an earlier branch left about a file records what *that* change was for, so it does not answer for yours: a file that has been explained once is still reported when you change it again on a new branch.
+
+Within one branch it is the other way round: once a path is covered, the reminder stops naming it even if you go on changing that file. The reminder is a floor, not a ceiling. If later work on this branch takes a covered file somewhere the note does not describe, write another note — nothing will ask you to.
 
 `supersedes` is for the reader. List the notes this change invalidates; leave the key out when there are none. Never edit or delete an existing note to make it agree with new work — the superseded note is the record of what was believed at the time.
 

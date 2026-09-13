@@ -132,6 +132,12 @@ function changeNotice(input) {
     return changes.complete ? null : INCOMPLETE_NOTICE;
   }
   const uncovered = uncoveredPaths(changes.root, changes.paths);
+  /*
+   * Silence has to mean "everything is recorded", so it is only reached when
+   * the whole change set was collected. A half that could not be read leaves a
+   * list that is short of something, and saying nothing about it would report
+   * an unrecorded change as an accounted-for one.
+   */
   if (uncovered.length === 0) {
     return changes.complete ? null : INCOMPLETE_NOTICE;
   }

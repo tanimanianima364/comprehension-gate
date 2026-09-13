@@ -54,6 +54,19 @@ Requiring exact repository-relative paths in `covers`, rather than allowing
 globs or directories, is the other deliberate constraint. `covers: [core/]`
 would silence the reminder for a whole subtree without explaining any of it.
 
+Coverage is scoped to the change set for the same reason, and the first draft
+of this change got it wrong: it treated any note naming a path as covering it
+forever, so the first branch to explain a file silenced it for every branch
+afterwards and the check would have decayed into nothing on a repository of
+any age. A note counts only when its own file is inside the change set being
+examined -- it records what *that* change was for, not this one. Making
+coverage expire with the file's *content* was considered next and rejected: it
+needs a per-path content identity the agent computes by hand, and it returns a
+path to the reminder on every subsequent keystroke, pushing toward one note per
+edit rather than one note per change. Inside a single branch, therefore, a
+covered path stays quiet however much it changes afterwards; the reminder is a
+floor, and naming a path's notes before each write is what covers the rest.
+
 # How it is built
 
 `core/notes.mjs` exposes one function, `uncoveredPaths(root, paths)`. It walks
