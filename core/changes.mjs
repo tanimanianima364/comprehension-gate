@@ -128,10 +128,17 @@ function committedPaths(root, maxBuffer) {
     }
     throw error;
   }
-  // --no-renames so a renamed file is reported as both a deletion and an
-  // addition, matching how the working tree half names both paths.
+  /*
+   * --no-renames so a renamed file is reported as both a deletion and an
+   * addition, matching how the working tree half names both paths.
+   *
+   * The trailing `--` ends the revisions. Without it a repository holding a
+   * file called `HEAD` makes git refuse the whole command as ambiguous, and
+   * the committed half of an ordinary branch cannot be collected at all --
+   * no fault injection needed, just a file with that name.
+   */
   return splitFields(
-    git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD"], maxBuffer)
+    git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD", "--"], maxBuffer)
   );
 }
 

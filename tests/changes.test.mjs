@@ -626,3 +626,33 @@ test("a git killed during the shallow check is a failure, not an absence", () =>
     process.env.PATH = previous;
   }
 });
+
+/*
+ * `HEAD` is a legal file name, and git refuses a command whose argument is both
+ * a revision and a path unless the revisions are ended with `--`. Without it an
+ * ordinary repository -- no fault injection, just a file with that name -- could
+ * not have its committed half collected at all.
+ */
+test("a file named like a revision does not make the committed half unreadable", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  write(repository, "HEAD", "not a ref\n");
+  write(repository, "refs/heads/main", "not a ref\n");
+  write(repository, "feature.js", "export {};\n");
+  commit(repository, "files whose names read as refs");
+
+  const ambiguous = spawnSync(
+    "git",
+    ["-C", repository, "diff", "--name-only", "HEAD~1", "HEAD"],
+    { encoding: "utf8" }
+  );
+  assert.equal(ambiguous.status, 128, "git itself refuses the command without the separator");
+  assert.match(ambiguous.stderr, /ambiguous argument/);
+
+  assert.deepEqual(changedPaths(repository), {
+    root: repository,
+    paths: ["HEAD", "feature.js", "refs/heads/main"],
+    complete: true
+  });
+  assert.deepEqual(changeSetCommandPaths(repository), ["HEAD", "feature.js", "refs/heads/main"]);
+});
