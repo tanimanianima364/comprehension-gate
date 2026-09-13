@@ -93,7 +93,7 @@ function attempt(collect) {
  * read at all.
  */
 function committedPaths(root, maxBuffer) {
-  const base = resolveBase(root);
+  const base = resolveBase(root, maxBuffer);
   if (base === null) {
     return [];
   }
@@ -119,25 +119,52 @@ function committedPaths(root, maxBuffer) {
  * branch and pruning leaves it dangling -- and adopting a ref that names no
  * commit makes merge-base fail, which would silently empty the committed half
  * of the change set rather than fall through to a base that does exist.
+ *
+ * A ref that is not there and a ref whose commit cannot be read are different
+ * failures, and git answers 1 with an empty stderr for both when asked for
+ * `<ref>^{commit}`. Asking for the bare ref separates them: that reads the ref
+ * file alone and succeeds even when the object it names is gone. The first is
+ * ordinary -- most repositories have only some of these refs -- and the second
+ * is a read failure that has to reach the caller, because treating it as "no
+ * base" reports a branch with commits on it as having none.
  */
-function resolveBase(root) {
-  for (const candidate of [originHead(root), ...BASE_CANDIDATES]) {
-    if (candidate === null) {
+function resolveBase(root, maxBuffer) {
+  let unreadable = null;
+  for (const candidate of [originHead(root, maxBuffer), ...BASE_CANDIDATES]) {
+    if (candidate === null || !refExists(root, candidate, maxBuffer)) {
       continue;
     }
-    try {
-      git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]);
+    if (resolvesToCommit(root, candidate, maxBuffer)) {
       return candidate;
-    } catch {
-      // Not this one.
     }
+    unreadable = candidate;
+  }
+  if (unreadable !== null) {
+    throw new Error(`The base ref ${unreadable} names a commit that could not be read.`);
   }
   return null;
 }
 
-function originHead(root) {
+function refExists(root, candidate, maxBuffer) {
+  return succeeds(() => git(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer));
+}
+
+function resolvesToCommit(root, candidate, maxBuffer) {
+  return succeeds(() => git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer));
+}
+
+function succeeds(call) {
   try {
-    const head = git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+    call();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function originHead(root, maxBuffer) {
+  try {
+    const head = git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], maxBuffer).trim();
     return head === "" ? null : head;
   } catch {
     // No remote, or no default branch recorded for it.

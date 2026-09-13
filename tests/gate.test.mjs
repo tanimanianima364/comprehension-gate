@@ -245,3 +245,23 @@ test("an empty half-collected change set still speaks", () => {
   assert.match(notice, /could not be collected/);
   assert.match(notice, /not listed rather than as unchanged/);
 });
+
+test("a base ref whose commit cannot be read makes the hook speak", () => {
+  const repository = createRepository();
+  const base = git(repository, ["rev-parse", "main"]).trim();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  change(repository, "committed.js");
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a commit on the branch"]);
+  assert.match(
+    claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+    /committed\.js/
+  );
+
+  fs.rmSync(path.join(repository, ".git", "objects", base.slice(0, 2), base.slice(2)));
+  assert.match(
+    claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+    /could not be collected/,
+    "a branch with commits on it is never reported as unchanged"
+  );
+});

@@ -385,3 +385,51 @@ test("no base to compare against is not a failure", () => {
   assert.equal(changes.complete, true, "a repository with no base still collected both halves");
   assert.deepEqual(changes.paths, ["working.js"]);
 });
+
+/*
+ * A base ref that is not there and one whose commit cannot be read are
+ * different failures, and git answers 1 with an empty stderr for both when
+ * asked for `<ref>^{commit}`. Treating the second as "no base" reported a
+ * branch with commits on it as having none, through every layer: the change
+ * set, the command, and the notice.
+ */
+test("a base ref whose commit cannot be read is a failure, not a missing base", () => {
+  const repository = createRepository();
+  const base = git(repository, ["rev-parse", "main"]).trim();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  write(repository, "committed.js", "export {};\n");
+  commit(repository, "a commit on the branch");
+  assert.deepEqual(changedPaths(repository), {
+    root: repository,
+    paths: ["committed.js"],
+    complete: true
+  });
+
+  fs.rmSync(path.join(repository, ".git", "objects", base.slice(0, 2), base.slice(2)));
+  assert.equal(
+    spawnSync("git", ["-C", repository, "rev-parse", "--verify", "--quiet", "main"]).status,
+    0,
+    "the ref is still there"
+  );
+  const commitLookup = spawnSync("git", ["-C", repository, "rev-parse", "--verify", "--quiet", "main^{commit}"], {
+    encoding: "utf8"
+  });
+  assert.equal(commitLookup.status, 1, "and asking for its commit fails the way a missing ref does");
+  assert.equal(commitLookup.stderr, "", "with nothing on stderr to tell them apart");
+
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, false);
+  assert.deepEqual(changes.paths, []);
+  assert.equal(changeSetCommandOutput(repository).complete, false, "and the command says so");
+});
+
+// A repository that simply has none of these refs is not a failure.
+test("no base ref at all is still an ordinary empty half", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "--detach"]);
+  git(repository, ["branch", "-D", "main"]);
+  write(repository, "working.js", "export {};\n");
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, true);
+  assert.deepEqual(changes.paths, ["working.js"]);
+});

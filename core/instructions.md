@@ -6,13 +6,13 @@ Work normally as a coding agent. The purpose of this gate is to ensure that a ch
 
 Everything this branch has done that its base branch has not: every path committed since the merge base with the default branch, and every path `git status` reports in the working tree. This is the same set a reviewer sees in the pull request. Ignored files never count, so a scratch file under a gitignored directory is free.
 
-To print it at any moment, run the line for your shell from inside the repository. It answers with a JSON array of paths, because a path may itself contain a newline:
+To print it at any moment, run the line for your shell from inside the repository. It answers with JSON — `{ "paths": [...], "complete": true }` — because a path may itself contain a newline, and because a list that is short of something has to be able to say so:
 
 ```text
 {{CHANGE_SET_COMMAND}}
 ```
 
-Use it rather than writing a `git diff` of your own. Resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none.
+When `complete` is `false`, part of the change set could not be read: an empty `paths` there does not mean the branch is unchanged, and a non-empty one is short of something. Use this command rather than writing a `git diff` of your own. Resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none.
 
 ## Classify the change
 
