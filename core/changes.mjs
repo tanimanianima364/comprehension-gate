@@ -172,21 +172,28 @@ function escapeBytes(buffer) {
   return escaped;
 }
 
-export function changedPaths(directory, options = {}) {
+// The repository a directory is in, or null when it is in none and when git
+// cannot say. Every caller treats null as "nothing to report".
+export function repositoryRoot(directory, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
   if (typeof directory !== "string" || !path.isAbsolute(directory)) {
     return null;
   }
-
-  const maxBuffer = options.maxBuffer ?? GIT_MAX_OUTPUT_BYTES;
-  let root;
   try {
     // Only the terminating newline: a directory whose name ends in a space is
     // a different directory, and trimming it examines someone else's
     // repository and reports its change set as this one's.
-    root = fs.realpathSync(
+    return fs.realpathSync(
       withoutNewline(ask(directory, ["rev-parse", "--show-toplevel"], maxBuffer).stdout.toString("utf8"))
     );
   } catch {
+    return null;
+  }
+}
+
+export function changedPaths(directory, options = {}) {
+  const maxBuffer = options.maxBuffer ?? GIT_MAX_OUTPUT_BYTES;
+  const root = repositoryRoot(directory, maxBuffer);
+  if (root === null) {
     return null;
   }
 

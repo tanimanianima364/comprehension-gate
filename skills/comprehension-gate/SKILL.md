@@ -11,7 +11,9 @@ This check was asked for, so it does not get skipped as mechanical. Produce both
 
 **The docstrings.** On every file and function the branch added or meaningfully changed, leave a docstring in the language's own convention saying what it is for and, where there was a choice, why it works this way. Do not restate the code: a docstring that narrates the steps costs a reader time and rots as soon as the code moves. Match the density of the surrounding file.
 
-**The note.** Write `docs/notes/YYYY-MM-DD-<short-slug>-<8 random hex characters>.md` with front matter listing, under `covers`, every repository-relative path it accounts for, and under `supersedes`, any earlier note this change invalidates. Cover three things in the body: what the change was for in the user's terms, the approach and at least one alternative that was rejected and why, and how it is built — which pieces are load-bearing and which are incidental.
+**The note.** Write `docs/notes/YYYY-MM-DD-<short-slug>-<8 random hex characters>.md` with front matter listing, under `covers`, every repository-relative path it accounts for, and under `supersedes`, any earlier note this change invalidates. Head the body with a single `#` line naming what the change did — that is the note's title, and the hook shows it when naming the note before a later edit. Then cover three things in `##` sections: what the change was for in the user's terms, the approach and at least one alternative that was rejected and why, and how it is built — which pieces are load-bearing and which are incidental.
+
+Look for the notes covering each changed path before writing anything — `grep -rlF -- "<path>" docs/notes`, fixed-string so a name holding `[`, `.` or `*` is not read as a pattern — and read them. A change that contradicts a recorded intent is fine, and is when a note superseding the old one is owed.
 
 Never edit or delete an existing note to make it agree with new work. A note records what was believed when it was written; a change that contradicts one writes a new note that supersedes it.
 

@@ -1,5 +1,6 @@
 /*
- * Which changed paths still have nothing recorded about them.
+ * Which changed paths still have nothing recorded about them, and which notes
+ * already say something about a path.
  *
  * A note is a markdown file under docs/notes whose front matter names, in
  * `covers`, the repository-relative paths the note accounts for. Notes are
@@ -38,12 +39,58 @@ export function uncoveredPaths(root, changed) {
   );
 }
 
+/*
+ * Every note that accounts for any of these paths, oldest file name first,
+ * each saying whether a later note replaced it. The reader needs that last
+ * part: a path covered by two notes must not send them to the stale one first.
+ *
+ * It takes the whole list rather than one path at a time because the tree is
+ * read once per call. A patch touching two hundred files against a repository
+ * holding five thousand notes would otherwise read a million files inside a
+ * hook that has twenty seconds to answer.
+ *
+ * Unlike coverage this is not scoped to a change set: the question here is
+ * what is on record about this file, and a note an earlier branch left is
+ * exactly what someone about to edit it should read.
+ */
+export function notesCovering(root, candidates) {
+  const targets = new Set(candidates);
+  const notes = readNotes(root);
+  const superseders = new Map();
+  for (const note of notes) {
+    for (const id of note.supersedes) {
+      superseders.set(id, note.file);
+    }
+  }
+  return notes
+    .filter(note => note.covers.some(entry => targets.has(entry)))
+    .map(note => ({
+      file: note.file,
+      title: note.title,
+      supersededBy: superseders.get(note.id) ?? null
+    }));
+}
+
+export function isNotePath(candidate) {
+  return typeof candidate === "string" && candidate.startsWith(NOTE_PREFIX);
+}
+
 function coveredPaths(root, inChangeSet) {
   const covered = new Set();
-  for (const notePath of noteFiles(path.join(root, ...NOTES_DIRECTORY.split("/")))) {
-    if (!inChangeSet.has(repositoryPath(root, notePath))) {
+  for (const note of readNotes(root)) {
+    if (!inChangeSet.has(note.file)) {
       continue;
     }
+    for (const entry of note.covers) {
+      covered.add(entry);
+    }
+  }
+  return covered;
+}
+
+function readNotes(root) {
+  const notes = [];
+  for (const notePath of noteFiles(path.join(root, ...NOTES_DIRECTORY.split("/")))) {
     let text;
     try {
       text = fs.readFileSync(notePath, "utf8");
@@ -54,17 +101,42 @@ function coveredPaths(root, inChangeSet) {
     if (frontMatter === null) {
       continue;
     }
-    for (const entry of parseList(frontMatter, "covers")) {
-      const repositoryRelative = coveredPath(entry);
-      if (repositoryRelative !== null) {
-        covered.add(repositoryRelative);
-      }
-    }
+    notes.push({
+      file: repositoryPath(root, notePath),
+      id: path.basename(notePath, ".md"),
+      covers: parseList(frontMatter.keys, "covers")
+        .map(coveredPath)
+        .filter(entry => entry !== null),
+      supersedes: parseList(frontMatter.keys, "supersedes"),
+      title: titleOf(frontMatter.body)
+    });
   }
-  return covered;
+  return notes;
 }
 
-function noteFiles(directory) {
+function titleOf(body) {
+  for (const line of body) {
+    const match = line.match(/^#\s+(.+)$/);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
+/*
+ * Ordered by file name rather than by position in the tree, and sorted once
+ * the whole walk is done. The names carry the date, so this is what puts a
+ * path's notes oldest first; sorting each directory as it is reached would
+ * order an archived 2026-01 note after a 2026-09 one sitting at the top level.
+ */
+function noteFiles(root) {
+  return walk(root).sort(
+    (left, right) => compare(path.basename(left), path.basename(right)) || compare(left, right)
+  );
+}
+
+function walk(directory) {
   let entries;
   try {
     entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -75,12 +147,16 @@ function noteFiles(directory) {
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...noteFiles(entryPath));
+      files.push(...walk(entryPath));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       files.push(entryPath);
     }
   }
   return files;
+}
+
+function compare(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /*
@@ -125,16 +201,16 @@ function frontMatterOf(text) {
     return null;
   }
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === FRONT_MATTER_FENCE);
-  return end === -1 ? null : lines.slice(1, end);
+  return end === -1 ? null : { keys: lines.slice(1, end), body: lines.slice(end + 1) };
 }
 
-function parseList(frontMatter, key) {
-  const start = frontMatter.findIndex(line => line.trimEnd() === `${key}:`);
+function parseList(keys, key) {
+  const start = keys.findIndex(line => line.trimEnd() === `${key}:`);
   if (start === -1) {
     return [];
   }
   const items = [];
-  for (const line of frontMatter.slice(start + 1)) {
+  for (const line of keys.slice(start + 1)) {
     if (line.trim() === "") {
       continue;
     }

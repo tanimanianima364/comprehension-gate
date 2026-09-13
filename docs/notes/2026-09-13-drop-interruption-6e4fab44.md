@@ -20,7 +20,9 @@ covers:
   - tests/tool-policy.test.mjs
 ---
 
-# What this change was for
+# The gate stopped interrupting, and change detection moved to the branch
+
+## What this change was for
 
 The gate used to stop the user. At MEDIUM it wanted an insight; at HIGH and
 CRITICAL it put a transfer question and held the turn until the user answered
@@ -30,7 +32,7 @@ interrupted work to ask them. The user asked for all of it to go: the
 questions, the turn hold, and the warning that replaced the hold on hosts that
 could not hold.
 
-# The approach, and what it rejected
+## The approach, and what it rejected
 
 Removing only the question was the obvious smaller change, and it was rejected
 because it leaves the machinery without a job it can do. The pass and LOW
@@ -56,7 +58,7 @@ is no session identity to key it by, no turn identity to bind a control to, no
 not be taken leaves a record that can never be cleared. `core/state.mjs` (395
 lines) and `core/snapshot.mjs` (192 lines) became `core/changes.mjs` (120).
 
-# How it is built
+## How it is built
 
 `core/changes.mjs` is the whole of change detection. `changedPaths` resolves
 the repository, picks a base ref (`refs/remotes/origin/HEAD`, then
