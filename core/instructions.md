@@ -14,6 +14,8 @@ To print it at any moment, run the line for your shell from inside the repositor
 
 When `complete` is `false`, part of the change set could not be read: an empty `paths` there does not mean the branch is unchanged, and a non-empty one is short of something. Use this command rather than writing a `git diff` of your own. Resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none.
 
+If you cannot run it — a sandbox that refuses the command, a session with no one to approve it — do not fall back to a `git diff`. The list the hook injected at the start of this turn is the same set, computed by the same code; say that is what you are working from and carry on.
+
 ## Classify the change
 
 Before writing anything, silently classify the change:
