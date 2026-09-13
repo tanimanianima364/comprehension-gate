@@ -308,8 +308,8 @@ test("a committed half too large to collect still leaves the working tree report
   assert.equal(whole.paths.length, 41);
 
   // Room for the line naming the repository, or one commit id, but not for
-  // forty file names. The temporary directory is deep on macOS and shallow on
-  // Linux, so the room is measured rather than assumed.
+  // forty file names. How deep the temporary directory sits is the host's
+  // business, so the room is measured from the path rather than assumed.
   const clipped = changedPaths(repository, { maxBuffer: Buffer.byteLength(repository) + 64 });
   assert.deepEqual(clipped.paths, ["working.js"]);
   assert.equal(clipped.complete, false, "a half that could not be collected is admitted, not hidden");

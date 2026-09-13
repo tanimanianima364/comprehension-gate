@@ -134,8 +134,6 @@ Codex discovers `hooks/hooks.json` from the plugin root after the plugin is inst
 npm test
 ```
 
-CI runs the suite on Ubuntu and on macOS. The plugin is POSIX only, but the two differ in exactly the places the tests lean on — BSD `grep`, a temp directory reached through a symlink, a git that ships with Xcode — so a pass on one is not a pass on the other.
-
 
 
 ## Scope
