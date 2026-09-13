@@ -15,6 +15,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const GIT_TIMEOUT_MS = 10_000;
 // Ordered by how well each ref answers "what will this branch be reviewed
@@ -71,16 +72,18 @@ function committedPaths(root) {
   return splitFields(git(root, ["diff", "--name-only", "--no-renames", "-z", mergeBase, "HEAD"]));
 }
 
+/*
+ * Every candidate is resolved to a commit before it is adopted. origin/HEAD in
+ * particular outlives the branch it points at -- renaming the remote default
+ * branch and pruning leaves it dangling -- and adopting a ref that names no
+ * commit makes merge-base fail, which would silently empty the committed half
+ * of the change set rather than fall through to a base that does exist.
+ */
 function resolveBase(root) {
-  try {
-    const head = git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
-    if (head !== "") {
-      return head;
+  for (const candidate of [originHead(root), ...BASE_CANDIDATES]) {
+    if (candidate === null) {
+      continue;
     }
-  } catch {
-    // No remote, or no default branch recorded for it.
-  }
-  for (const candidate of BASE_CANDIDATES) {
     try {
       git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]);
       return candidate;
@@ -91,10 +94,26 @@ function resolveBase(root) {
   return null;
 }
 
+function originHead(root) {
+  try {
+    const head = git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+    return head === "" ? null : head;
+  } catch {
+    // No remote, or no default branch recorded for it.
+    return null;
+  }
+}
+
 /*
  * Porcelain v1 with -z: `XY PATH\0`, and for a rename or copy the original
  * path follows as its own `\0`-terminated field. --untracked-files=all lists
  * files inside untracked directories individually.
+ *
+ * X is the index and Y the working tree, and a rename can be reported in
+ * either: `git mv` stages it as "R ", while a plain move plus `git add -N`
+ * reports " R". Both columns have to be tested, or the original path is read
+ * as the next entry's status line -- which drops it and invents a path out of
+ * its last characters.
  */
 function workingTreePaths(root) {
   const fields = splitFields(
@@ -107,7 +126,7 @@ function workingTreePaths(root) {
       continue;
     }
     paths.push(field.slice(3));
-    if (field[0] === "R" || field[0] === "C") {
+    if (isRenameOrCopy(field[0]) || isRenameOrCopy(field[1])) {
       index += 1;
       if (fields[index]) {
         paths.push(fields[index]);
@@ -117,6 +136,41 @@ function workingTreePaths(root) {
   return paths;
 }
 
+function isRenameOrCopy(status) {
+  return status === "R" || status === "C";
+}
+
 function splitFields(output) {
   return output.split("\0").filter(field => field !== "");
+}
+
+/*
+ * The same change set, on stdout, one path per line. The manual skill runs
+ * this rather than carrying its own git one-liner: a hand-written
+ * `merge-base HEAD origin/HEAD` resolves nothing in a repository with no
+ * remote and drops a rename's original path, so the two would disagree about
+ * what has to be recorded exactly where it matters.
+ */
+export async function main() {
+  const changes = changedPaths(process.cwd());
+  if (changes === null || changes.paths.length === 0) {
+    return;
+  }
+  process.stdout.write(`${changes.paths.join("\n")}\n`);
+}
+
+if (isMainModule(process.argv[1])) {
+  await main();
+}
+
+function isMainModule(argument) {
+  if (typeof argument !== "string" || argument.length === 0) {
+    return false;
+  }
+  const scriptPath = fileURLToPath(import.meta.url);
+  try {
+    return fs.realpathSync(argument) === fs.realpathSync(scriptPath);
+  } catch {
+    return path.resolve(argument) === path.resolve(scriptPath);
+  }
 }

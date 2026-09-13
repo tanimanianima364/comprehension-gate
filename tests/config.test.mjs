@@ -38,6 +38,18 @@ test("shared hook config covers session start, prompt, tool use, and stop", () =
   assert.equal("matcher" in config.hooks.PreToolUse[0], false);
 });
 
+// The skill used to carry its own `git merge-base HEAD origin/HEAD` one-liner,
+// which saw nothing at all in a repository with no remote.
+test("the manual skill defers to the session instructions for the change set", () => {
+  const skill = fs.readFileSync(
+    path.join(root, "skills", "comprehension-gate", "SKILL.md"),
+    "utf8"
+  );
+  assert.doesNotMatch(skill, /origin\/HEAD/);
+  assert.doesNotMatch(skill, /merge-base/);
+  assert.match(skill, /change set command the active Comprehension Gate session instructions supply/);
+});
+
 test("native adapters register the stop event the way each host spells it", () => {
   const cursor = readJson("adapters/cursor/hooks.json");
   assert.equal(cursor.hooks.stop[0].loop_limit, 1);

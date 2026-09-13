@@ -19,10 +19,28 @@ import { changedPaths } from "./changes.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
+const CHANGES_PATH = path.join(path.dirname(SCRIPT_PATH), "changes.mjs");
 const MAX_LISTED_PATHS = 10;
 
-export function renderInstructions() {
-  return fs.readFileSync(INSTRUCTIONS_PATH, "utf8");
+/*
+ * The instructions carry the exact command that prints the change set, so the
+ * manual skill runs this plugin's own code instead of a hand-written git
+ * one-liner that would disagree with the hook about renames and about a
+ * repository with no remote. Both paths are single-quoted: a plugin installed
+ * under a directory with a space or a quote in it must not turn into shell
+ * syntax.
+ */
+export function renderInstructions(options = {}) {
+  const runtime = options.runtime ?? process.execPath;
+  const entrypoint = options.changes ?? CHANGES_PATH;
+  return fs
+    .readFileSync(INSTRUCTIONS_PATH, "utf8")
+    .replaceAll("{{CHANGE_SET_COMMAND}}", `${quote(runtime)} ${quote(entrypoint)}`);
+}
+
+// POSIX single-quoting keeps every byte of a path literal.
+function quote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 export function handleHook(input, mode = "compatible") {
