@@ -764,6 +764,31 @@ test("an inherited GIT_DIR does not redirect the answer to another repository", 
  * same replacement character, so two files whose names differ only there became
  * one path and one of them vanished from the change set without a trace.
  */
+/*
+ * Escaping only the names that need it traded one collision for another: the
+ * escape of a raw 0xFF is `%FF`, which is also how an ordinary file called
+ * `x%FF.js` spells itself, so those two collapsed into one path just as the
+ * two invalid names had. The escape character is escaped everywhere now.
+ */
+test("an escaped name and an ordinary name that spells it are two paths", () => {
+  const repository = createRepository();
+  fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xff]), Buffer.from(".js")]), "raw\n");
+  fs.writeFileSync(path.join(repository, "x%FF.js"), "literal\n");
+
+  const changes = changedPaths(repository);
+  assert.deepEqual(changes.paths, ["x%25FF.js", "x%FF.js"], "one spelling each, and no two files sharing one");
+  assert.deepEqual(changeSetCommandPaths(repository), ["x%25FF.js", "x%FF.js"]);
+});
+
+// An ordinary path is left exactly as git spells it, apart from the escape
+// character itself.
+test("an ordinary path is not otherwise rewritten", () => {
+  const repository = createRepository();
+  write(repository, "src/\u65e5\u672c\u8a9e.js", "export {};\n");
+  write(repository, "plain.js", "export {};\n");
+  assert.deepEqual(changedPaths(repository).paths, ["plain.js", "src/\u65e5\u672c\u8a9e.js"]);
+});
+
 test("two file names that are not valid UTF-8 stay two paths", () => {
   const repository = createRepository();
   fs.writeFileSync(Buffer.concat([Buffer.from(`${repository}/x`), Buffer.from([0xff]), Buffer.from(".js")]), "1\n");

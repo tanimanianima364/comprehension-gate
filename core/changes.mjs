@@ -124,7 +124,7 @@ function fieldsOf(buffer) {
   for (let index = 0; index <= buffer.length; index += 1) {
     if (index === buffer.length || buffer[index] === 0) {
       if (index > start) {
-        fields.push(decodePath(buffer.subarray(start, index)));
+        fields.push(encodeBytes(buffer.subarray(start, index)));
       }
       start = index + 1;
     }
@@ -133,14 +133,33 @@ function fieldsOf(buffer) {
 }
 
 /*
- * UTF-8 when the bytes are UTF-8, and a lossless escape when they are not.
- * Decoding invalid bytes the ordinary way maps every one of them to U+FFFD, so
- * two files whose names differ only there become the same string and one of
- * them vanishes from the change set without a trace.
+ * One spelling per file, and no two files sharing one.
+ *
+ * A name is bytes. Decoding it as UTF-8 maps every invalid byte to the same
+ * replacement character, so two names differing only there become one string
+ * and one of the files disappears. Escaping only the names that need it does
+ * not fix that: it trades one collision for another, because the escape of a
+ * raw 0xFF is `%FF`, which is also how an ordinary file called `x%FF.js`
+ * spells itself -- and those two collapsed just the same.
+ *
+ * So the escape character is escaped everywhere. `%` is written `%25` in every
+ * path, valid or not, which is what makes the mapping injective: `%XX` can
+ * only come from a byte that was escaped, `%25` can only come from a literal
+ * `%`, and a name that is valid UTF-8 is otherwise left exactly as git spells
+ * it. The same encoding has to be applied to a path that arrives as text
+ * rather than as bytes -- an entry in a note, a path in a tool payload -- or
+ * the two sides would not meet.
  */
-function decodePath(buffer) {
+function encodeBytes(buffer) {
   const text = buffer.toString("utf8");
-  return Buffer.compare(Buffer.from(text, "utf8"), buffer) === 0 ? text : escapeBytes(buffer);
+  return Buffer.compare(Buffer.from(text, "utf8"), buffer) === 0
+    ? encodePath(text)
+    : escapeBytes(buffer);
+}
+
+// A path that is already text: only the escape character needs escaping.
+export function encodePath(value) {
+  return value.replaceAll("%", "%25");
 }
 
 function escapeBytes(buffer) {
