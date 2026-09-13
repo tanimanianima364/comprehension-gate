@@ -138,7 +138,7 @@ npm test
 
 ## Scope
 
-POSIX only. The plugin renders one shell command — the one that prints the change set — and quotes it POSIX style; it compares repository paths as git spells them, with no separator translation. Windows is out of scope: supporting it would mean a second quoting rule for a shell nobody here can run a test against, and a separator conversion that, on a POSIX host, turns a legal character in a file name into a path separator. Both were carried for a while and both are gone.
+Linux only, and in practice WSL: that is where the plugin is run and where its tests are run, and CI is Ubuntu. No other operating system is tested, and none is claimed. The plugin renders one shell command — the one that prints the change set — and quotes it POSIX style; it compares repository paths as git spells them, with no separator translation. Windows is out of scope: supporting it would mean a second quoting rule for a shell nobody here can run a test against, and a separator conversion that, on a POSIX host, turns a legal character in a file name into a path separator. Both were carried for a while and both are gone.
 
 ## Security boundary
 
