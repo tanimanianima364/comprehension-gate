@@ -1,18 +1,20 @@
 ---
 name: comprehension-gate
-description: Run a comprehension check on the current change before continuing implementation. Use when the user asks to verify their understanding, account for a current change, or explicitly requests a comprehension gate.
+description: Account for the current change on this branch before continuing implementation. Use when the user asks to account for a current change, or explicitly requests a comprehension gate.
 ---
 
 # Comprehension Gate
 
-Account for the current change at its level. Anchor everything in the actual change; a general engineering principle is welcome as long as the change is a real instance of it.
+Account for the change this branch has made, at its level. Anchor everything in the actual change; a general engineering principle is welcome as long as the change is a real instance of it.
 
-Choose the minimum appropriate level. This check was asked for, so it has no LOW and it always asks: every level ends in one transfer question. A request to verify understanding that never puts a question is not a check — the automatic gate is where an insight alone can stand, and where LOW is decided.
+The change is everything this branch has done that its base has not — committed and uncommitted alike. `git diff --name-only $(git merge-base HEAD origin/HEAD)` and `git status --porcelain` together name it.
 
-- **MEDIUM — Insight + Transfer:** write one short insight covering the convention, pattern, constraint, or principle the change touched, whether the change followed it, extended it, or departed from it and why, and one other place the same rule applies. Then ask one transfer question, reaching a situation neither the change nor the insight has named.
-- **HIGH — the same, harder:** the question should take a real step from the change rather than to an adjacent case.
-- **CRITICAL — the same, strictest:** no benefit of the doubt on a vague answer.
+Choose the minimum appropriate level. This check was asked for, so it has no LOW: write the insight even for a change the automatic reminder would have let pass in silence.
 
-Never ask a question the change already answers: if the user could answer by reading the diff, it measures reading rather than understanding. Never ask for a definition. Judge the mental model rather than exact terminology. If an answer is partly correct, identify the missing concept, explain only that part, and ask one focused follow-up. Do not accept a bare confirmation such as “I understand.”
+- **MEDIUM — Insight:** write one short insight covering the convention, pattern, constraint, or principle the change touched, whether the change followed it, extended it, or departed from it and why, and one other place the same rule applies.
+- **HIGH — the same, deeper:** say why this approach was chosen over the alternative that was rejected, not only what it does.
+- **CRITICAL — the same, strictest:** name what would go wrong if the principle were violated here, concretely.
 
-When the level's requirement is met, use the exact `pass` control action supplied by the active Comprehension Gate session instructions, then state briefly that the gate is satisfied. Do not invent a control target, use a shell unless the active instructions provide an exact provider-specific shell control command, or use the LOW bypass from this manual check.
+Ask the user nothing. This gate puts no question to anyone: it is context you supply, not a test you set. State plainly what the change did and what it turned on.
+
+When the insight is written, say briefly that the change is accounted for. There is no control action to perform and nothing is holding the turn.

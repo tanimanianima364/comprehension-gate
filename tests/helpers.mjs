@@ -1,32 +1,7 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  controlTarget
-} from "../core/gate.mjs";
-
-export function createFixture(extraEnv = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-hook-"));
-  return {
-    env: {
-      COMPREHENSION_GATE_STATE_DIR: directory,
-      ...extraEnv
-    }
-  };
-}
-
-export function controlInput(action, field = "file_path") {
-  if (field === "kiroOperations") {
-    return { operations: [{ mode: "Line", path: controlTarget(action) }] };
-  }
-  return { [field]: controlTarget(action) };
-}
-
-export function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-import { execFileSync } from "node:child_process";
 
 export function git(directory, args) {
   return execFileSync("git", ["-C", directory, ...args], {
