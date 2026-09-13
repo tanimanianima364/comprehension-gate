@@ -5,7 +5,14 @@ on:
   pull_request:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # POSIX only, but two POSIX hosts: macOS differs from Linux in the places
+    # these tests lean on -- BSD grep, a symlinked temp directory, and a git
+    # that ships with Xcode rather than with the distribution.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
