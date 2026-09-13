@@ -280,7 +280,7 @@ test("a repository whose every half failed still makes the hook speak", { skip: 
  * (An inherited GIT_INDEX_FILE cannot be used for this any more -- the runner
  * strips every such variable, since the host's could point anywhere.)
  */
-test("a half-collected change set is never reported as fully recorded", () => {
+test("a half-collected change set is never reported as fully recorded", { skip: process.getuid?.() === 0 }, () => {
   const repository = createRepository();
   git(repository, ["checkout", "-q", "-b", "feature"]);
   change(repository, "covered.js");

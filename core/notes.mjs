@@ -26,7 +26,11 @@ const NOTE_PREFIX = `${NOTES_DIRECTORY}/`;
 const FRONT_MATTER_FENCE = "---";
 // A key at column zero ends a list; an entry is a dash, a space, and a name.
 const KEY_LINE = /^[A-Za-z_][A-Za-z0-9_-]*:/;
-const ENTRY_LINE = /^\s+-[ \t]+(\S.*)$/;
+// An entry is indentation, a dash, ONE space, and then the name verbatim. The
+// space after the dash is the whole of the fixed prefix: a second one belongs
+// to the name, since a file name may begin with a space, and eating it made a
+// note that named " app.js" cover "app.js" instead.
+const ENTRY_LINE = /^\s+- (.*)$/;
 
 export function uncoveredPaths(root, changed) {
   const covered = coveredPaths(root, new Set(changed));
@@ -91,10 +95,20 @@ function coveredPaths(root, inChangeSet) {
 function readNotes(root) {
   const notes = [];
   for (const notePath of noteFiles(path.join(root, ...NOTES_DIRECTORY.split("/")))) {
-    let text;
+    let bytes;
     try {
-      text = fs.readFileSync(notePath, "utf8");
+      bytes = fs.readFileSync(notePath);
     } catch {
+      continue;
+    }
+    /*
+     * A note that is not valid UTF-8 is not read at all. Decoding it anyway
+     * replaces each bad byte with U+FFFD, and a `covers` entry that then reads
+     * as "src\uFFFD.js" covers a real file of that name -- one the note never
+     * meant, silenced by an encoding accident.
+     */
+    const text = bytes.toString("utf8");
+    if (Buffer.compare(Buffer.from(text, "utf8"), bytes) !== 0) {
       continue;
     }
     const frontMatter = frontMatterOf(text);
@@ -218,7 +232,7 @@ function parseList(keys, key) {
       break;
     }
     const entry = line.match(ENTRY_LINE);
-    if (entry === null) {
+    if (entry === null || entry[1] === "") {
       return [];
     }
     /*
@@ -257,6 +271,13 @@ function coveredPath(entry) {
 
 // The repository's own spelling. This runs on POSIX only, where the separator
 // is the one git uses and a backslash in a name is part of the name.
+/*
+ * Spelled the way the change set spells it, escape character included. The
+ * check "is this note part of the change set" compares this to a path git
+ * reported, and without the same encoding a note called `n%.md` is never
+ * found in the set -- while a base note that happens to be called `n%25.md`
+ * is, and covers this change with a record that was never about it.
+ */
 function repositoryPath(root, target) {
-  return path.relative(root, target);
+  return encodePath(path.relative(root, target));
 }
