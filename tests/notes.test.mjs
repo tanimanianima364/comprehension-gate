@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { NOTES_DIRECTORY, uncoveredPaths } from "../core/notes.mjs";
 import { createRepository } from "./helpers.mjs";
 
@@ -293,3 +294,101 @@ test("an entry naming a path with a percent sign covers that path and no other",
     "the ordinary file is covered; the one holding a raw byte is not"
   );
 });
+
+/*
+ * A note's own path is compared to the change set to decide whether the note
+ * is part of this change. Both sides have to be spelled the same way, escape
+ * character included: without that a note called `n%.md` was never found in
+ * the set, while a base note that happened to be called `n%25.md` was -- and
+ * covered this change with a record that was never about it.
+ */
+test("a note whose name holds a percent sign is matched to the change set by its encoded spelling", () => {
+  const repository = createRepository();
+  writeNote(repository, "n%.md", "---\ncovers:\n  - src.js\n---\n");
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/n%25.md`, "src.js"]),
+    [],
+    "the branch note is in the set under its encoded name, so it covers"
+  );
+
+  const other = createRepository();
+  writeNote(other, "n%25.md", "---\ncovers:\n  - src.js\n---\n");
+  assert.deepEqual(
+    uncoveredPaths(other, [`${NOTES_DIRECTORY}/n%25.md`, "src.js"]),
+    ["src.js"],
+    "a note literally called n%25.md encodes to n%2525.md and is not the branch note"
+  );
+});
+
+/*
+ * The fixed prefix is `- ` with exactly one space. A second space belongs to
+ * the name: a file may begin with a space, and eating it made a note that
+ * named " app.js" cover "app.js" instead -- the sibling it never mentioned
+ * silenced, the one it did mention still reported.
+ */
+test("an entry keeps a leading space in the name", () => {
+  const repository = createRepository();
+  writeNote(repository, "lead.md", "---\ncovers:\n  -  app.js\n---\n");
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/lead.md`, " app.js", "app.js"]),
+    ["app.js"]
+  );
+});
+
+test("a tab after the dash is not an entry", () => {
+  const repository = createRepository();
+  writeNote(repository, "tab.md", "---\ncovers:\n  -\tapp.js\n---\n");
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/tab.md`, "app.js"]),
+    ["app.js"]
+  );
+});
+
+/*
+ * A note that is not valid UTF-8 is not read. Decoding it anyway replaces each
+ * bad byte with U+FFFD, and an entry that then reads as "src�.js" covers
+ * a real file of that name -- one the note never meant.
+ */
+test("a note that is not valid UTF-8 covers nothing", () => {
+  const repository = createRepository();
+  const target = path.join(repository, NOTES_DIRECTORY, "bad.md");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(
+    target,
+    Buffer.concat([Buffer.from("---\ncovers:\n  - src"), Buffer.from([0xff]), Buffer.from(".js\n---\n")])
+  );
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/bad.md`, "src�.js"]),
+    ["src�.js"]
+  );
+});
+
+/*
+ * The samples in the README and in the instructions are what a note is copied
+ * from, so they are read here by the same parser that reads notes. A sample
+ * spelled in a form the parser rejects would teach every note to cover
+ * nothing, and the documentation would be the one place nobody tested.
+ */
+for (const document of ["README.md", "core/instructions.md"]) {
+  test(`the covers sample in ${document} is read as coverage`, () => {
+    const text = fs.readFileSync(path.resolve(fileURLToPath(import.meta.url), "../..", document), "utf8");
+    const samples = [...text.matchAll(/```markdown\n(---\ncovers:\n[\s\S]*?)\n```/g)].map((found) => found[1]);
+    assert.ok(samples.length > 0, `${document} shows at least one note`);
+    for (const [index, sample] of samples.entries()) {
+      // The entries as a reader sees them: the lines after `covers:` that
+      // look like list items, up to the first line that does not.
+      const entries = [];
+      for (const line of sample.split("\n").slice(2)) {
+        if (!line.startsWith("  - ")) {
+          break;
+        }
+        entries.push(line.slice(4));
+      }
+      assert.ok(entries.length > 0, "the sample lists at least one path");
+      const repository = createRepository();
+      const note = `2026-09-14-sample-${index}-0a1b2c3d.md`;
+      writeNote(repository, note, sample);
+      assert.deepEqual(uncoveredPaths(repository, [`${NOTES_DIRECTORY}/${note}`, ...entries]), []);
+    }
+  });
+}

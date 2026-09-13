@@ -26,7 +26,11 @@ const NOTE_PREFIX = `${NOTES_DIRECTORY}/`;
 const FRONT_MATTER_FENCE = "---";
 // A key at column zero ends a list; an entry is a dash, a space, and a name.
 const KEY_LINE = /^[A-Za-z_][A-Za-z0-9_-]*:/;
-const ENTRY_LINE = /^\s+-[ \t]+(\S.*)$/;
+// An entry is indentation, a dash, ONE space, and then the name verbatim. The
+// space after the dash is the whole of the fixed prefix: a second one belongs
+// to the name, since a file name may begin with a space, and eating it made a
+// note that named " app.js" cover "app.js" instead.
+const ENTRY_LINE = /^\s+- (.*)$/;
 
 export function uncoveredPaths(root, changed) {
   const covered = coveredPaths(root, new Set(changed));
@@ -78,7 +82,15 @@ export function isNotePath(candidate) {
 function coveredPaths(root, inChangeSet) {
   const covered = new Set();
   for (const note of readNotes(root)) {
-    if (!inChangeSet.has(note.file)) {
+    /*
+     * Spelled the way the change set spells it, escape character included,
+     * for this comparison only. Without it a note called `n%.md` is never
+     * found in the set -- while a base note that happens to be called
+     * `n%25.md` is, and covers this change with a record that was never about
+     * it. The spelling is a matching key, not a file name: the note's own path
+     * stays as it is on disk, since that is what the reader is sent to open.
+     */
+    if (!inChangeSet.has(encodePath(note.file))) {
       continue;
     }
     for (const entry of note.covers) {
@@ -91,10 +103,20 @@ function coveredPaths(root, inChangeSet) {
 function readNotes(root) {
   const notes = [];
   for (const notePath of noteFiles(path.join(root, ...NOTES_DIRECTORY.split("/")))) {
-    let text;
+    let bytes;
     try {
-      text = fs.readFileSync(notePath, "utf8");
+      bytes = fs.readFileSync(notePath);
     } catch {
+      continue;
+    }
+    /*
+     * A note that is not valid UTF-8 is not read at all. Decoding it anyway
+     * replaces each bad byte with U+FFFD, and a `covers` entry that then reads
+     * as "src\uFFFD.js" covers a real file of that name -- one the note never
+     * meant, silenced by an encoding accident.
+     */
+    const text = bytes.toString("utf8");
+    if (Buffer.compare(Buffer.from(text, "utf8"), bytes) !== 0) {
       continue;
     }
     const frontMatter = frontMatterOf(text);
@@ -160,21 +182,6 @@ function compare(left, right) {
 }
 
 /*
- * Front matter is read by hand rather than with a YAML parser: the plugin has
- * no dependencies, and the one key that has to be machine-read is a list of
- * strings. Both spellings a writer reaches for are read -- the block list and
- * the inline `[a, b]` -- because a list spelled the other way would silently
- * cover nothing.
- *
- * Leniency past that point runs the wrong way, and this is the one place in
- * the plugin where failing soft is not the safe direction. Failing to read a
- * list leaves its paths reported, which someone notices and can fix; reading
- * one loosely silences paths the note never explained, which nobody ever finds
- * out about. So anything that is not unambiguously a list of strings -- an
- * unclosed bracket, an unterminated quote, a bare scalar -- reads as no list
- * at all.
- */
-/*
  * Front matter is read by hand, and the grammar it accepts is deliberately
  * smaller than YAML's rather than an approximation of it.
  *
@@ -218,7 +225,7 @@ function parseList(keys, key) {
       break;
     }
     const entry = line.match(ENTRY_LINE);
-    if (entry === null) {
+    if (entry === null || entry[1] === "") {
       return [];
     }
     /*
