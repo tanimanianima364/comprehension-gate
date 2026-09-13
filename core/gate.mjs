@@ -171,10 +171,6 @@ function changeNotice(input) {
  * edit arrives in time to change it. The instructions still tell the agent to
  * look for a file's notes before changing it; this is the backstop, not the
  * plan.
- *
- * Cursor is excluded. Its preToolUse is registered failClosed and its output
- * schema has not been verified to carry context, so an unrecognized field
- * there risks failing every tool call rather than adding a hint.
  */
 function recordedIntent(input) {
   const target = toolTargets(input, READING_TOOL);
