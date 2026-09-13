@@ -1,20 +1,20 @@
 ---
 name: comprehension-gate
-description: Account for the current change on this branch before continuing implementation. Use when the user asks to account for a current change, or explicitly requests a comprehension gate.
+description: Record why the current change was made — a note under docs/notes plus the docstrings on what changed. Use when the user asks to account for a current change, to write the note for it, or explicitly requests a comprehension gate.
 ---
 
 # Comprehension Gate
 
-Account for the change this branch has made, at its level. Anchor everything in the actual change; a general engineering principle is welcome as long as the change is a real instance of it.
+Record the change this branch has made. The change is everything this branch has done that its base has not — committed and uncommitted alike. Print it by running the exact change set command the active Comprehension Gate session instructions supply, which runs the same code the hook runs. Do not write a `git diff` of your own instead: resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none. If no session instructions are present, say so rather than guessing at a command.
 
-The change is everything this branch has done that its base has not — committed and uncommitted alike. Print it by running the exact change set command the active Comprehension Gate session instructions supply, which runs the same code the hook runs. Do not write a `git diff` of your own instead: resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none. If no session instructions are present, say so rather than guessing at a command.
+This check was asked for, so it does not get skipped as mechanical. Produce both records.
 
-Choose the minimum appropriate level. This check was asked for, so it has no LOW: write the insight even for a change the automatic reminder would have let pass in silence.
+**The docstrings.** On every file and function the branch added or meaningfully changed, leave a docstring in the language's own convention saying what it is for and, where there was a choice, why it works this way. Do not restate the code: a docstring that narrates the steps costs a reader time and rots as soon as the code moves. Match the density of the surrounding file.
 
-- **MEDIUM — Insight:** write one short insight covering the convention, pattern, constraint, or principle the change touched, whether the change followed it, extended it, or departed from it and why, and one other place the same rule applies.
-- **HIGH — the same, deeper:** say why this approach was chosen over the alternative that was rejected, not only what it does.
-- **CRITICAL — the same, strictest:** name what would go wrong if the principle were violated here, concretely.
+**The note.** Write `docs/notes/YYYY-MM-DD-<short-slug>-<8 random hex characters>.md` with front matter listing, under `covers`, every repository-relative path it accounts for, and under `supersedes`, any earlier note this change invalidates. Cover three things in the body: what the change was for in the user's terms, the approach and at least one alternative that was rejected and why, and how it is built — which pieces are load-bearing and which are incidental.
 
-Ask the user nothing. This gate puts no question to anyone: it is context you supply, not a test you set. State plainly what the change did and what it turned on.
+Never edit or delete an existing note to make it agree with new work. A note records what was believed when it was written; a change that contradicts one writes a new note that supersedes it.
 
-When the insight is written, say briefly that the change is accounted for. There is no control action to perform and nothing is holding the turn.
+`covers` is the only part a machine reads, so keep it exact, and never widen it to a path the note does not actually explain.
+
+Ask the user nothing. This gate puts no question to anyone: it is a record you leave, not a test you set. When both records are written, say briefly what you recorded and where.

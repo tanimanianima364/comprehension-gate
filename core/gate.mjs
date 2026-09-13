@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { changedPaths } from "./changes.mjs";
+import { NOTES_DIRECTORY, uncoveredPaths } from "./notes.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
@@ -113,7 +114,8 @@ export function malformedInputResult() {
 
 /*
  * A directory that is not a repository, or a repository git cannot be asked
- * about, produces no notice at all rather than a guess.
+ * about, produces no notice at all rather than a guess. Neither does a branch
+ * whose every changed path is already covered by a note.
  */
 function changeNotice(input) {
   const changes = changedPaths(hookDirectory(input));
@@ -121,20 +123,32 @@ function changeNotice(input) {
     return null;
   }
   /*
-   * Silence has to mean "nothing changed", so it is only reached when the whole
-   * change set was collected. A half that could not be read is not an empty
-   * half: saying nothing about it would report an unread change as no change.
+   * Silence has to mean "everything is recorded", so it is only reached when
+   * the whole change set was collected. A half that could not be read is not an
+   * empty half, and is not a covered one either: saying nothing about it would
+   * report an unread change as an accounted-for one.
    */
   if (changes.paths.length === 0) {
+    return changes.complete ? null : INCOMPLETE_NOTICE;
+  }
+  const uncovered = uncoveredPaths(changes.root, changes.paths);
+  /*
+   * Silence has to mean "everything is recorded", so it is only reached when
+   * the whole change set was collected. A half that could not be read leaves a
+   * list that is short of something, and saying nothing about it would report
+   * an unrecorded change as an accounted-for one.
+   */
+  if (uncovered.length === 0) {
     return changes.complete ? null : INCOMPLETE_NOTICE;
   }
   const short = changes.complete
     ? ""
     : " Part of the change set could not be collected, so this list is short of something.";
   return [
-    `Comprehension Gate: this branch has changed ${listPaths(changes.paths)}.${short}`,
-    "Account for the change at its level before finishing: a mechanical change needs nothing,",
-    "and anything above that needs a short insight about the convention or principle the change touched.",
+    `Comprehension Gate: no note on this branch records why these paths changed: ${listPaths(uncovered)}.${short}`,
+    `Write one under ${NOTES_DIRECTORY}/ covering them, and leave the docstrings on what you changed`,
+    "saying what each file and function is for and why it works the way it does.",
+    "A purely mechanical change needs no note and can stay listed here.",
     "Nothing holds the turn and the user is shown no warning, so this reminder is the only notice you get."
   ].join(" ");
 }

@@ -1,6 +1,12 @@
 # Comprehension Gate
 
-Work normally as a coding agent. The purpose of this gate is to ensure that a change to the project leaves behind something the user can learn from, without turning routine work into an unrelated quiz. Nothing you do while working is refused, nothing holds your turn, and the user is shown no warning: read, search, experiment, write scratch files, run commands, and edit the project as the task needs. What the gate asks is that a change to the project does not go unaccounted for.
+Work normally as a coding agent. The purpose of this gate is to leave behind what the code cannot say for itself: what you were trying to achieve, and why you built it this way rather than another way. Nothing you do while working is refused, nothing holds your turn, and the user is shown no warning. You are asked for two records, and asked no questions.
+
+## The two records
+
+**Docstrings** say what a file or a function is for and how it works, in the code, always describing the current state. They are the final state of the thing, so they merge like code: when two branches touch one, the answer is whatever the code now does.
+
+**Notes** say what one change was trying to achieve and why the approach was chosen. They are a record of a moment, so they are never rewritten. A note is written once, and a later change that invalidates it writes a new note that supersedes it instead of editing it. Two branches therefore never conflict over a note: each adds its own file.
 
 ## What counts as a change
 
@@ -16,40 +22,63 @@ When `complete` is `false`, part of the change set could not be read: an empty `
 
 If you cannot run it — a sandbox that refuses the command, a session with no one to approve it — do not fall back to a `git diff`. The list the hook injected at the start of this turn is the same set, computed by the same code; say that is what you are working from and carry on.
 
-## Classify the change
+## Docstrings
 
-Before writing anything, silently classify the change:
+On every file and function you add or meaningfully change, leave a docstring in the language's own convention that covers:
 
-- **LOW**: boilerplate, formatting, generated code, mechanical refactoring, obvious repetition, trivial CRUD, or configuration with no meaningful design choice. A change that introduces a rule or a constraint — a validation limit, a timeout, a retry bound, a permission check — is never LOW, however small it looks.
-- **MEDIUM**: normal application logic or a moderately important implementation decision.
-- **HIGH**: architecture, concurrency, authentication or authorization, security-sensitive behavior, important state transitions, algorithms, non-obvious error handling, or data-model design.
-- **CRITICAL**: a decision whose misunderstanding could cause serious production, security, financial, or data-integrity consequences.
+- what it is for — the job it does for its caller, not the steps it takes
+- the approach, where there was a choice — why it works this way, what it refuses to do, what it trades away
 
-Do not ask the user to classify the change, and do not ask the user anything else about it either. This gate puts no question to the user.
+Do not restate the code. A docstring that says "loops over the entries and returns the total" is worse than none: it costs a reader time and rots the moment the loop changes. If nothing about a function required a decision, its name and signature are the docstring, and adding prose there is padding. Match the density of the surrounding file.
 
-## What each level requires
+## Notes
 
-- **LOW**: nothing.
-- **MEDIUM and above**: write the insight. The higher the level, the more the insight has to say about why the approach was chosen rather than what it does.
+A note is needed when the change touched something a reader would have to reconstruct: architecture, concurrency, authorization, an algorithm, a state transition, a data model, non-obvious error handling, or any rule or constraint the code now enforces — a validation limit, a timeout, a retry bound, a permission check. A change that is purely mechanical needs no note: boilerplate, formatting, generated code, a rename, an obvious repetition, configuration with no design choice behind it. Decide this yourself; the user is not asked.
 
-## The insight
+A path with no note stays listed in the reminder. That is expected for mechanical work and is not a reason to write a note that says nothing.
 
-For MEDIUM and above, write one short insight occasioned by the change. This is context you supply, not a test, so state plainly what the change did. Cover:
+Write a note as `docs/notes/YYYY-MM-DD-<short-slug>-<8 hex characters>.md`. The hex is only there so two branches writing on the same day never collide; pick it at random.
 
-- the convention, pattern, constraint, or principle the change touched — a rule this codebase follows, or a general engineering principle the change is an instance of
-- whether the change followed it, extended it, or departed from it, and why
-- one other place the same rule applies
+```markdown
+---
+covers:
+  - path/relative/to/the/repository.ext
+  - another/changed/path.ext
+supersedes:
+  - 2026-01-31-an-earlier-note-0a1b2c3d
+---
 
-Keep it to a few sentences. A general principle is welcome as long as the change is a real instance of it; a principle the change does not actually demonstrate is padding.
+# What this change was for
 
-## When to write it
+The goal, in the user's terms rather than the code's.
 
-Write the insight before you finish a turn in which the project changed.
+# The approach, and what it rejected
 
-Nothing enforces this. The hook cannot hold the turn, does not warn the user, and has no way to tell whether you wrote anything: the reminder injected at the start of each turn is the only notice there is, and a change left unaccounted for simply stays unaccounted for. Never leave a change out of the account because no one is checking, and never move a change somewhere the gate does not look.
+Why this way. Name at least one alternative that was considered and say what
+ruled it out — that is the part a reader cannot recover from the diff.
+
+# How it is built
+
+The shape of the implementation and the intent behind it: what each piece is
+responsible for, and which parts are load-bearing rather than incidental.
+```
+
+`covers` is the only part read by a machine, so its shape is fixed and small. The key is on a line of its own, spelled `covers:` and nothing else. Each entry is a line of `  - ` followed by one repository-relative path, **taken literally to the end of the line**, trailing spaces included: no quoting, no escaping, no inline `[a, b]`, no comments. Every character is part of the name, so a path holding a quote, a comma, a `#` or a backslash is written plainly and matched exactly as git spells it. The one exception is `%`: write it as it appears in the name and the reader escapes it for you, which is what keeps a file called `x%FF.js` distinct from one whose name holds a raw byte.
+
+The list is read whole or not at all. A blank line between entries is fine and the next key ends it; any other line — a continuation, a comment, a dash with nothing after it — makes the note cover nothing, rather than covering whatever was read before it. Do not cover a path the note does not actually explain, and never widen `covers` to silence the reminder.
+
+A note counts only for the change it is part of. A note an earlier branch left about a file records what *that* change was for, so it does not answer for yours: a file that has been explained once is still reported when you change it again on a new branch.
+
+Within one branch it is the other way round: once a path is covered, the reminder stops naming it even if you go on changing that file. The reminder is a floor, not a ceiling. If later work on this branch takes a covered file somewhere the note does not describe, write another note — nothing will ask you to.
+
+`supersedes` is for the reader. List the notes this change invalidates; leave the key out when there are none. Never edit or delete an existing note to make it agree with new work — the superseded note is the record of what was believed at the time.
+
+Before changing a file, look for the notes that cover it and read them. A change that contradicts a recorded intent is fine, and is exactly when a new note that supersedes the old one is owed.
 
 ## How the hook behaves
 
-At the start of a session and at every user message, the hook derives the branch's change set from git and injects it into your context. It keeps no state between invocations, so the list is always the branch's current set rather than a record of what you have already accounted for; a change you accounted for in an earlier turn is still listed while it remains on the branch, and does not need accounting for twice.
+At the start of a session and at every user message, the hook derives the branch's change set from git, subtracts every path some note already covers, and injects what is left. It keeps no state between invocations, so the list is always the branch's current state rather than a record of what you have already done.
+
+Nothing enforces any of this. The hook cannot hold the turn, does not warn the user, and has no way to tell whether a docstring was written or whether a note says anything true: the injected reminder is the only notice there is. Never leave a change unrecorded because no one is checking, never move a change somewhere the gate does not look, and never write a note or a docstring whose only purpose is to make the reminder go quiet.
 
 The hook is a workflow guardrail, not a security sandbox. Continue to obey the host agent's normal permissions and security controls.

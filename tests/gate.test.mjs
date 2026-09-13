@@ -6,12 +6,19 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { handleHook, renderInstructions } from "../core/gate.mjs";
+import { NOTES_DIRECTORY } from "../core/notes.mjs";
 import { createRepository, git } from "./helpers.mjs";
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function change(repository, relativePath = "src.js") {
   fs.writeFileSync(path.join(repository, relativePath), "export {};\n");
+}
+
+function note(repository, covers) {
+  const target = path.join(repository, NOTES_DIRECTORY, "2026-09-13-a-note-a1b2c3d4.md");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `---\ncovers:\n${covers.map(one => `  - ${one}`).join("\n")}\n---\n\n# Why\n`);
 }
 
 function claudeContext(result) {
@@ -82,12 +89,12 @@ test("SessionStart injects the instructions, and the change set when there is on
   const repository = createRepository();
   const clean = handleHook({ cwd: repository, hook_event_name: "SessionStart", source: "startup" }, "compatible");
   assert.match(claudeContext(clean), /# Comprehension Gate/);
-  assert.doesNotMatch(claudeContext(clean), /this branch has changed/);
+  assert.doesNotMatch(claudeContext(clean), /records why these paths changed/);
 
   change(repository);
   const dirty = handleHook({ cwd: repository, hook_event_name: "SessionStart", source: "startup" }, "compatible");
   assert.match(claudeContext(dirty), /# Comprehension Gate/);
-  assert.match(claudeContext(dirty), /this branch has changed "src\.js"/);
+  assert.match(claudeContext(dirty), /records why these paths changed: "src\.js"/);
 });
 
 test("a prompt carries the change set and stays quiet over a clean branch", () => {
@@ -102,7 +109,7 @@ test("a prompt carries the change set and stays quiet over a clean branch", () =
   const notice = claudeContext(
     handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
   );
-  assert.match(notice, /this branch has changed "src\.js"/);
+  assert.match(notice, /records why these paths changed: "src\.js"/);
   assert.match(notice, /only notice you get/);
 });
 
@@ -149,6 +156,26 @@ test("a path that could forge a line of the reminder is quoted and escaped", () 
   assert.equal(notice.split("\n").length, 1, "the notice stays one line");
 });
 
+test("a path a note covers is not named, and a branch fully covered says nothing", () => {
+  const repository = createRepository();
+  change(repository, "alpha.js");
+  change(repository, "beta.js");
+
+  note(repository, ["alpha.js"]);
+  const notice = claudeContext(
+    handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
+  );
+  assert.match(notice, /changed: "beta\.js"\./);
+  assert.doesNotMatch(notice, /alpha\.js/);
+
+  note(repository, ["alpha.js", "beta.js"]);
+  assert.deepEqual(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible"), {
+    exitCode: 0,
+    stdout: "",
+    stderr: ""
+  });
+});
+
 test("provider-specific context and allow shapes are correct", () => {
   const repository = createRepository();
   change(repository);
@@ -179,7 +206,7 @@ test("Cursor is watched through its first workspace root", () => {
   const context = JSON.parse(
     handleHook({ workspace_roots: [repository], hook_event_name: "sessionStart" }, "cursor").stdout
   ).additional_context;
-  assert.match(context, /this branch has changed "src\.js"/);
+  assert.match(context, /records why these paths changed: "src\.js"/);
 });
 
 test("hook_event_name must match a known event exactly", () => {
@@ -191,10 +218,12 @@ test("hook_event_name must match a known event exactly", () => {
   }
 });
 
-test("the instructions describe a gate that asks the user nothing", () => {
+test("the instructions describe the two records and ask the user nothing", () => {
   const text = renderInstructions();
   assert.doesNotMatch(text, /\{\{/);
-  assert.match(text, /before you finish/i);
+  assert.match(text, /docstring/i);
+  assert.match(text, new RegExp(NOTES_DIRECTORY));
+  assert.match(text, /^covers:$/m, "the note front matter key notes.mjs reads is spelled out");
   assert.doesNotMatch(text, /transfer question/i);
   assert.doesNotMatch(text, /control action/i);
 });
@@ -288,6 +317,43 @@ test("a repository whose every half failed still makes the hook speak", { skip: 
       claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
       /could not be collected/
     );
+  } finally {
+    fs.chmodSync(path.join(repository, ".git", "index"), 0o644);
+  }
+});
+
+/*
+ * Silence means "everything is recorded". A change set that could only be half
+ * collected has to say so even when every path it did collect is covered, or
+ * an unrecorded change is reported as an accounted-for one.
+ *
+ * The injection is real: `git status` reads the index and `git diff` between
+ * two trees does not, so an unreadable index fails exactly one of the halves.
+ * (An inherited GIT_INDEX_FILE cannot be used for this any more -- the runner
+ * strips every such variable, since the host's could point anywhere.)
+ */
+test("a half-collected change set is never reported as fully recorded", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  change(repository, "covered.js");
+  note(repository, ["covered.js"]);
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a recorded change"]);
+  change(repository, "unrecorded.js");
+
+  assert.match(
+    claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+    /unrecorded\.js/,
+    "with both halves, the uncommitted file is reported"
+  );
+
+  fs.chmodSync(path.join(repository, ".git", "index"), 0o000);
+  try {
+    const notice = claudeContext(
+      handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
+    );
+    assert.match(notice, /could not be collected/);
+    assert.doesNotMatch(notice, /unrecorded\.js/, "the half that failed is unknown, not reported");
   } finally {
     fs.chmodSync(path.join(repository, ".git", "index"), 0o644);
   }
