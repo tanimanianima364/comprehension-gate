@@ -278,3 +278,18 @@ test("an entry is not trimmed, so it cannot cover a path it does not name", () =
     ["app.js"]
   );
 });
+
+/*
+ * A `covers` entry arrives as text and a changed path arrives as bytes; both
+ * are spelled the same way or they never meet. A note naming the ordinary file
+ * `x%FF.js` must cover that file and not the one whose name holds a raw 0xFF.
+ */
+test("an entry naming a path with a percent sign covers that path and no other", () => {
+  const repository = createRepository();
+  writeNote(repository, "percent.md", "---\ncovers:\n  - x%FF.js\n---\n");
+  assert.deepEqual(
+    uncoveredPaths(repository, [`${NOTES_DIRECTORY}/percent.md`, "x%25FF.js", "x%FF.js"]),
+    ["x%FF.js"],
+    "the ordinary file is covered; the one holding a raw byte is not"
+  );
+});

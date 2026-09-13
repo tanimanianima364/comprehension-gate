@@ -63,7 +63,7 @@ The shape of the implementation and the intent behind it: what each piece is
 responsible for, and which parts are load-bearing rather than incidental.
 ```
 
-`covers` is the only part read by a machine, so its shape is fixed and small. The key is on a line of its own, spelled `covers:` and nothing else. Each entry is a line of `  - ` followed by one repository-relative path, **taken literally to the end of the line**, trailing spaces included: no quoting, no escaping, no inline `[a, b]`, no comments. Every character is part of the name, so a path holding a quote, a comma, a `#` or a backslash is written plainly and matched exactly as git spells it.
+`covers` is the only part read by a machine, so its shape is fixed and small. The key is on a line of its own, spelled `covers:` and nothing else. Each entry is a line of `  - ` followed by one repository-relative path, **taken literally to the end of the line**, trailing spaces included: no quoting, no escaping, no inline `[a, b]`, no comments. Every character is part of the name, so a path holding a quote, a comma, a `#` or a backslash is written plainly and matched exactly as git spells it. The one exception is `%`: write it as it appears in the name and the reader escapes it for you, which is what keeps a file called `x%FF.js` distinct from one whose name holds a raw byte.
 
 The list is read whole or not at all. A blank line between entries is fine and the next key ends it; any other line — a continuation, a comment, a dash with nothing after it — makes the note cover nothing, rather than covering whatever was read before it. Do not cover a path the note does not actually explain, and never widen `covers` to silence the reminder.
 

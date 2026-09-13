@@ -17,6 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { encodePath } from "./changes.mjs";
 
 export const NOTES_DIRECTORY = "docs/notes";
 
@@ -168,7 +169,10 @@ function coveredPath(entry) {
   if (entry === "") {
     return null;
   }
-  const normalized = path.posix.normalize(entry);
+  // Spelled the way a path from git is spelled: the escape character escaped,
+  // so an entry naming a file called `x%FF.js` meets the path git reports for
+  // it rather than the one it reports for a name holding a raw 0xFF.
+  const normalized = encodePath(path.posix.normalize(entry));
   if (path.posix.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../")) {
     return null;
   }
