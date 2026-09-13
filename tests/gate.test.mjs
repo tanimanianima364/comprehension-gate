@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { handleHook, renderInstructions } from "../core/gate.mjs";
-import { createRepository } from "./helpers.mjs";
+import { createRepository, git } from "./helpers.mjs";
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -215,4 +215,33 @@ test("command entrypoint consumes hook JSON over stdin", () => {
   });
   assert.equal(malformed.status, 1);
   assert.match(malformed.stderr, /could not parse hook input/);
+});
+
+/*
+ * Silence means "nothing changed". A change set that could only be half
+ * collected has to say so even when the half it did collect is empty, or an
+ * unread change reads as no change at all.
+ */
+test("an empty half-collected change set still speaks", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  change(repository, "first.js");
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a commit to lose"]);
+  const middle = git(repository, ["rev-parse", "HEAD"]).trim();
+  change(repository, "second.js");
+  git(repository, ["add", "-A"]);
+  git(repository, ["commit", "-q", "-m", "a commit on top of it"]);
+
+  assert.match(
+    claudeContext(handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")),
+    /first\.js/
+  );
+
+  fs.rmSync(path.join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2)));
+  const notice = claudeContext(
+    handleHook({ cwd: repository, hook_event_name: "UserPromptSubmit" }, "compatible")
+  );
+  assert.match(notice, /could not be collected/);
+  assert.match(notice, /not listed rather than as unchanged/);
 });

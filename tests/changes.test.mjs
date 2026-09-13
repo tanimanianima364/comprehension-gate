@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,10 @@ function changeSetCommandOutput(repository) {
   });
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
+}
+
+function changeSetCommandPaths(repository) {
+  return changeSetCommandOutput(repository).paths;
 }
 
 function write(repository, relativePath, contents) {
@@ -200,12 +205,12 @@ test("the command the skill runs reports exactly what the hook reports", () => {
 
   const expected = changedPaths(repository).paths;
   assert.deepEqual(expected, ["README.md", "committed.js", "readme.md", "working.js"]);
-  assert.deepEqual(changeSetCommandOutput(repository), expected);
+  assert.deepEqual(changeSetCommandPaths(repository), expected);
 });
 
 test("the change set command says nothing outside a repository and never fails", () => {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "not-a-repo-"));
-  assert.deepEqual(changeSetCommandOutput(directory), []);
+  assert.deepEqual(changeSetCommandOutput(directory), { paths: [], complete: false, reason: "not a git repository, or git could not be asked" });
 });
 
 test("the rendered instructions carry the change set command the skill is told to use", () => {
@@ -230,7 +235,7 @@ test("a newline inside a path does not turn one file into two", () => {
   write(repository, "plain.js", "export {};\n");
 
   assert.deepEqual(changedPaths(repository).paths, ["alpha\nbeta.js", "plain.js"]);
-  assert.deepEqual(changeSetCommandOutput(repository), ["alpha\nbeta.js", "plain.js"]);
+  assert.deepEqual(changeSetCommandPaths(repository), ["alpha\nbeta.js", "plain.js"]);
 });
 
 /*
@@ -268,7 +273,7 @@ test("the rendered command runs in a POSIX shell and is spelled for PowerShell t
 
   const run = spawnSync(posix, { cwd: repository, encoding: "utf8", shell: "/bin/sh" });
   assert.equal(run.status, 0, run.stderr);
-  assert.deepEqual(JSON.parse(run.stdout), ["src.js"]);
+  assert.deepEqual(JSON.parse(run.stdout).paths, ["src.js"]);
 
   assert.ok(powershell.startsWith("& "), powershell);
   assert.ok(powershell.includes("plug in''s dir"), "PowerShell doubles a single quote to escape it");
@@ -322,4 +327,61 @@ test("every character PowerShell reads as a single quote is escaped", () => {
 
   const posix = text.match(/^POSIX shell: (.+)$/m)[1];
   assert.ok(posix.includes("O\u2019Connor"), "a POSIX shell reads only the ASCII quote");
+});
+
+/*
+ * A merge base that cannot be computed is not the same as two commits with no
+ * common ancestor. git says which by its exit code, and swallowing the first
+ * as an empty list reported a branch as fully collected when half of it had
+ * never been read.
+ *
+ * The injection removes the base commit's own object: merge-base cannot read
+ * it, while `git status` -- which compares the index and the working tree
+ * against HEAD -- still can.
+ */
+test("a merge base that cannot be computed is a failure, not an empty half", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "-b", "feature"]);
+  write(repository, "first.js", "export {};\n");
+  commit(repository, "the commit whose object is removed");
+  const middle = git(repository, ["rev-parse", "HEAD"]).trim();
+  write(repository, "second.js", "export {};\n");
+  commit(repository, "a commit on top of it");
+  write(repository, "working.js", "export {};\n");
+  assert.equal(changedPaths(repository).complete, true);
+
+  // Removing a commit in the middle of the branch leaves the base ref and HEAD
+  // both readable, and only the walk between them broken.
+  fs.rmSync(path.join(repository, ".git", "objects", middle.slice(0, 2), middle.slice(2)));
+  const broken = spawnSync("git", ["-C", repository, "merge-base", "HEAD", "main"], {
+    encoding: "utf8"
+  });
+  assert.notEqual(broken.status, 0, "the injection has to break merge-base");
+  assert.notEqual(broken.stderr, "", "and it has to be distinguishable from an unrelated history");
+  assert.equal(
+    spawnSync("git", ["-C", repository, "status", "--porcelain"]).status,
+    0,
+    "and has to leave the working tree readable"
+  );
+  assert.equal(
+    spawnSync("git", ["-C", repository, "rev-parse", "--verify", "--quiet", "main^{commit}"]).status,
+    0,
+    "and the base ref still resolves, so the empty-by-design path is not the one taken"
+  );
+
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, false, "the committed half could not be read");
+  assert.deepEqual(changes.paths, ["working.js"]);
+  assert.equal(changeSetCommandOutput(repository).complete, false, "and the command says so");
+});
+
+// A repository with no base at all is legitimately empty on that half.
+test("no base to compare against is not a failure", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "--detach"]);
+  git(repository, ["branch", "-D", "main"]);
+  write(repository, "working.js", "export {};\n");
+  const changes = changedPaths(repository);
+  assert.equal(changes.complete, true, "a repository with no base still collected both halves");
+  assert.deepEqual(changes.paths, ["working.js"]);
 });

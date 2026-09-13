@@ -35,7 +35,10 @@ const BASE_CANDIDATES = ["origin/main", "origin/master", "main", "master"];
 function git(directory, args, maxBuffer = GIT_MAX_OUTPUT_BYTES) {
   return execFileSync("git", ["-C", directory, ...args], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    // stderr is captured rather than discarded: it is the only thing that
+    // separates "these histories are unrelated" from "a commit could not be
+    // read", which git reports with the same exit code.
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: GIT_TIMEOUT_MS,
     maxBuffer
   });
@@ -79,8 +82,15 @@ function attempt(collect) {
 
 /*
  * Nothing to compare against is not an error: a repository with no default
- * branch yet, or a HEAD with no common ancestor, still has a working tree,
- * and reporting that half alone is better than reporting nothing.
+ * branch yet, or a HEAD with no common ancestor, still has a working tree, and
+ * reporting that half alone is better than reporting nothing.
+ *
+ * A merge base that cannot be computed for any other reason is an error, and
+ * has to reach the caller. The exit code does not separate them -- git answers
+ * 1 both for "these histories are unrelated" and for "a commit could not be
+ * read" -- but only the second says anything on stderr. Swallowing it as an
+ * empty list reported a branch as fully collected when half of it had not been
+ * read at all.
  */
 function committedPaths(root, maxBuffer) {
   const base = resolveBase(root);
@@ -90,8 +100,11 @@ function committedPaths(root, maxBuffer) {
   let mergeBase;
   try {
     mergeBase = git(root, ["merge-base", "HEAD", base]).trim();
-  } catch {
-    return [];
+  } catch (error) {
+    if (error?.status === 1 && String(error.stderr ?? "") === "") {
+      return [];
+    }
+    throw error;
   }
   // --no-renames so a renamed file is reported as both a deletion and an
   // addition, matching how the working tree half names both paths.
@@ -184,7 +197,11 @@ function splitFields(output) {
  */
 export async function main() {
   const changes = changedPaths(process.cwd());
-  process.stdout.write(`${JSON.stringify(changes === null ? [] : changes.paths, null, 2)}\n`);
+  const answer =
+    changes === null
+      ? { paths: [], complete: false, reason: "not a git repository, or git could not be asked" }
+      : { paths: changes.paths, complete: changes.complete };
+  process.stdout.write(`${JSON.stringify(answer, null, 2)}\n`);
 }
 
 if (isMainModule(process.argv[1])) {

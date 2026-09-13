@@ -21,6 +21,8 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md");
 const CHANGES_PATH = path.join(path.dirname(SCRIPT_PATH), "changes.mjs");
 const MAX_LISTED_PATHS = 10;
+const INCOMPLETE_NOTICE =
+  "Comprehension Gate: part of the change set could not be collected, so nothing can be said about what it holds. Treat the branch as having changes that are not listed rather than as unchanged.";
 
 /*
  * The instructions carry the exact command that prints the change set, so the
@@ -115,8 +117,16 @@ export function malformedInputResult() {
  */
 function changeNotice(input) {
   const changes = changedPaths(hookDirectory(input));
-  if (changes === null || changes.paths.length === 0) {
+  if (changes === null) {
     return null;
+  }
+  /*
+   * Silence has to mean "nothing changed", so it is only reached when the whole
+   * change set was collected. A half that could not be read is not an empty
+   * half: saying nothing about it would report an unread change as no change.
+   */
+  if (changes.paths.length === 0) {
+    return changes.complete ? null : INCOMPLETE_NOTICE;
   }
   const short = changes.complete
     ? ""
