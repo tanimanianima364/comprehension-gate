@@ -1,8 +1,10 @@
 # Comprehension Gate
 
-Comprehension Gate puts a deterministic reminder in front of a coding agent: this is what the branch has changed, and it has to be accounted for. It does not fork or replace the official `learning-output-style` plugin.
+Comprehension Gate puts a deterministic reminder in front of a coding agent: these paths changed on this branch and nothing records why. It does not fork or replace the official `learning-output-style` plugin.
 
-The hook interrupts no one. It refuses no tool, holds no turn, blocks no prompt, and shows the user nothing. It derives the branch's change set from git at the start of a session and at every user message, and injects it into the agent's context alongside the instructions for what to record. Whether anything gets recorded is up to the agent; the reminder is the only pressure there is.
+What it asks for is two records. **Docstrings** say what a file or function is for and why it works the way it does; they describe the current state, so they merge like code. **Notes** — markdown files under `docs/notes` — say what one change was trying to achieve and which alternative was rejected; they record a moment, so they are never rewritten, and a later change writes a new note that supersedes the old one instead. Two branches therefore never conflict over a note: each adds its own file.
+
+The hook interrupts no one. It refuses no tool, holds no turn, blocks no prompt, and shows the user nothing. At the start of a session and at every user message it derives the branch's change set from git, subtracts every path some note already covers, and injects what is left. Whether anything gets recorded is up to the agent; the reminder is the only pressure there is.
 
 That is a deliberate trade, and it replaces an earlier design that held the turn and put a transfer question to the user. Questions that the user could not answer from shared context, and a held turn, cost more than they returned.
 
@@ -25,11 +27,11 @@ The two Kiro adapters differ only in packaging. 3.x reads standalone `.kiro/hook
 ## How it works
 
 ```text
-SessionStart    -> inject the instructions, plus the branch's change set if there is one
-UserPromptSubmit -> inject the branch's change set; stay silent when the branch is clean
-PreToolUse      -> allow
-PostToolUse     -> allow
-Stop            -> allow
+SessionStart     -> inject the instructions, plus any uncovered paths
+UserPromptSubmit -> inject the uncovered paths; stay silent when none are left
+PreToolUse       -> allow
+PostToolUse      -> allow
+Stop             -> allow
 ```
 
 The change set is everything this branch has done that its base has not: every path committed since the merge base with the default branch, plus every path `git status --porcelain=v1 -z --untracked-files=all` reports in the working tree. That is the same set a reviewer sees in the pull request, and it is the range a record has to cover.
@@ -55,6 +57,24 @@ git's output is read with a limit no realistic branch reaches. Node's default is
 Only the hook's own working directory is examined — `cwd`, or the first entry of Cursor's `workspace_roots`. Other worktrees of the same repository are not watched. They were, under the previous design, because a held turn invited relocating a change to escape it; with nothing to escape, the branch being worked in is the branch a record belongs to.
 
 Nothing is remembered between hook invocations. There is no state file, no baseline, no session identity, and no notion of a change having been accounted for: the notice is always the branch's current change set. A change accounted for in an earlier turn is still listed while it remains on the branch, and does not need accounting for twice.
+
+## Notes
+
+A note is a markdown file anywhere under `docs/notes`, with front matter naming the repository-relative paths it accounts for:
+
+```markdown
+---
+covers:
+  - core/gate.mjs
+  - core/notes.mjs
+supersedes:
+  - 2026-01-31-an-earlier-note-0a1b2c3d
+---
+```
+
+`covers` is the only part read by a machine, and it is read exactly: a path missing from every note's `covers` stays in the reminder. Both the block list above and an inline `covers: [a, b]` are accepted, because a list spelled the other way would silently cover nothing. `supersedes` is for the reader and does not change what is covered — a superseded note still covers its paths, and the record of what was believed at the time is the point of keeping it.
+
+Everything here fails soft. A note that cannot be read or parsed covers nothing, and an unreadable `docs/notes` covers nothing at all: reporting a path as uncovered is always safer than throwing the hook away. Paths under `docs/notes` are never reported, so writing a note does not itself demand one. Nothing decides whether a path deserves a note — that judgment stays with the agent, and a purely mechanical change is expected to stay listed.
 
 `hook_event_name` is matched exactly and case-insensitively against the known events; unrecognized or missing values and unparseable hook input exit non-zero without emitting an allow or a deny.
 
@@ -115,7 +135,7 @@ The renderer encodes the absolute entrypoint as a base64url argument and uses a 
 npm test
 ```
 
-The tests cover: the change set for a clean branch, uncommitted edits, additions, deletions, untracked and ignored files, a rename staged and unstaged, a dangling `origin/HEAD` falling through to a base that exists, a path containing a newline staying one path, a committed half too large to collect leaving the working tree reported and saying the list is short, a merge base that cannot be computed and a base ref whose commit cannot be read both counting as failures while a missing ref does not, an empty half-collected change set still speaking, a shallow clone that cannot reach the merge base counting as a failure, a tag sharing a branch's name never becoming the base, a working directory whose name ends in a space or a carriage return being the one examined, a git killed during the base ref lookup, the default branch lookup or the shallow check counting as a failure rather than an absence, a broken ref file counting as a failure rather than a missing ref, a file named like a revision not making the committed half unreadable, a single-branch clone of a trunk that is not main never reported as unchanged, unrelated histories counting as a short list, a listing git said was short never reported as complete, an inherited `GIT_DIR` not redirecting the answer, two file names that are not valid UTF-8 staying two paths, an escaped name and an ordinary name that spells it staying two paths, an ordinary path not otherwise rewritten, a submodule set to ignore still reported, a repository whose every half failed still making the hook speak, a repository git cannot read at all still having no change set, every character PowerShell reads as a single quote being escaped, the change set command agreeing exactly with the hook over a committed rename in a repository with no remote, a plugin path containing `$&` surviving substitution, the rendered POSIX command running in a real shell from a directory whose name holds a space and a quote and the PowerShell form carrying the call operator, the manual skill deferring to that command rather than carrying its own, a path shaped like a line of the reminder being quoted and escaped, commits on a branch alongside uncommitted work, a file both committed and then edited, a call from a subdirectory, a repository with no remote, a clone that has `origin/HEAD`, a non-repository directory, and a repository git cannot read; that no tool is ever refused, on every host, for built-in, MCP, `apply_patch`, and unknown tool names; that a stop over a changed branch holds nothing and writes nothing to stderr on every host; instruction and change-set injection at session start and at a prompt, silence over a clean branch, the notice's ten-path cap, and Cursor's first workspace root; provider-specific context and allow shapes; exact event-name matching; that the instructions contain no placeholder, no transfer question, and no control action; adapter and hook config validity and safe command encoding against shell metacharacters; and, by spawning the real entrypoint, a symlinked plugin root, malformed stdin, and Kiro's now-zero process exit.
+The tests cover: note coverage for a missing notes tree, a block list, an inline list, notes in subdirectories, several notes together, a note with no front matter, an unterminated one, and one with no `covers` key, entries that need normalizing or that escape the repository, the notes directory itself, and an unreadable note; the change set for a clean branch, uncommitted edits, additions, deletions, untracked and ignored files, a rename staged and unstaged, a dangling `origin/HEAD` falling through to a base that exists, a path containing a newline staying one path, a committed half too large to collect leaving the working tree reported and saying the list is short, a merge base that cannot be computed and a base ref whose commit cannot be read both counting as failures while a missing ref does not, an empty half-collected change set still speaking, a shallow clone that cannot reach the merge base counting as a failure, a tag sharing a branch's name never becoming the base, a working directory whose name ends in a space being the one examined, a broken ref file counting as a failure rather than a missing ref, a repository git cannot read at all still having no change set, every character PowerShell reads as a single quote being escaped, a path containing a newline staying one path, a committed half too large to collect leaving the working tree reported and saying the list is short, a merge base that cannot be computed and a base ref whose commit cannot be read both counting as failures while a missing ref does not, an empty half-collected change set still speaking, a repository git cannot read at all still having no change set, every character PowerShell reads as a single quote being escaped, a path containing a newline staying one path, a committed half too large to collect leaving the working tree reported and saying the list is short, a repository git cannot read at all still having no change set, every character PowerShell reads as a single quote being escaped, the change set command agreeing exactly with the hook over a committed rename in a repository with no remote, the manual skill deferring to that command rather than carrying its own, commits on a branch alongside uncommitted work, a file both committed and then edited, a call from a subdirectory, a repository with no remote, a clone that has `origin/HEAD`, a non-repository directory, and a repository git cannot read; that no tool is ever refused, on every host, for built-in, MCP, `apply_patch`, and unknown tool names; that a stop over a changed branch holds nothing and writes nothing to stderr on every host; instruction and change-set injection at session start and at a prompt, silence over a clean branch, the notice's ten-path cap, Cursor's first workspace root, and a branch whose every path a note covers; provider-specific context and allow shapes; exact event-name matching; that the instructions contain no placeholder, no transfer question, no control action, and the `covers` key `notes.mjs` reads; adapter and hook config validity and safe command encoding against shell metacharacters; and, by spawning the real entrypoint, a symlinked plugin root, malformed stdin, and Kiro's now-zero process exit.
 
 ## Security boundary
 
