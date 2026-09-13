@@ -186,7 +186,7 @@ function resolveBase(root, maxBuffer) {
 function refState(root, candidate, maxBuffer) {
   const named = attemptGit(() => git(root, ["rev-parse", "--verify", "--quiet", candidate], maxBuffer));
   if (!named.ok) {
-    return named.stderr === "" ? MISSING : UNREADABLE;
+    return isAbsence(named) ? MISSING : UNREADABLE;
   }
   const commit = attemptGit(() =>
     git(root, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], maxBuffer)
@@ -196,29 +196,55 @@ function refState(root, candidate, maxBuffer) {
 
 function attemptGit(call) {
   try {
-    call();
-    return { ok: true, stderr: "" };
+    return { ok: true, stdout: call(), status: 0, signal: null, stderr: "" };
   } catch (error) {
-    return { ok: false, stderr: String(error?.stderr ?? "") };
+    return {
+      ok: false,
+      stdout: "",
+      status: typeof error?.status === "number" ? error.status : null,
+      signal: error?.signal ?? null,
+      stderr: String(error?.stderr ?? "")
+    };
   }
 }
 
+/*
+ * The one failure that means "there is nothing here" rather than "I could not
+ * look": git exited 1 and said nothing. A process killed by a signal -- which
+ * is also how a timeout arrives -- reports no exit code at all and an empty
+ * stderr, and reading that as an absence turned every question this file asks
+ * into a confident "no": no ref, no default branch, not shallow. Each of those
+ * answers empties the change set, so a git that was killed reported a branch
+ * with commits on it as unchanged.
+ */
+function isAbsence(result) {
+  return result.status === 1 && result.signal === null && result.stderr === "";
+}
+
+// Asked only to decide whether an empty merge-base answer can be believed, so
+// not being able to ask is itself a reason not to believe it.
 function isShallow(root, maxBuffer) {
-  try {
-    return git(root, ["rev-parse", "--is-shallow-repository"], maxBuffer).trim() === "true";
-  } catch {
-    return false;
+  const result = attemptGit(() => git(root, ["rev-parse", "--is-shallow-repository"], maxBuffer));
+  if (!result.ok) {
+    throw new Error("Whether the repository is shallow could not be determined.");
   }
+  return result.stdout.trim() === "true";
 }
 
 function originHead(root, maxBuffer) {
-  try {
-    const head = git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], maxBuffer).trim();
+  const result = attemptGit(() =>
+    git(root, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], maxBuffer)
+  );
+  if (result.ok) {
+    const head = result.stdout.trim();
     return head === "" ? null : head;
-  } catch {
-    // No remote, or no default branch recorded for it.
+  }
+  // No remote, or no default branch recorded for it -- but only when git said
+  // so by exiting 1 in silence.
+  if (isAbsence(result)) {
     return null;
   }
+  throw new Error("The remote's default branch could not be read.");
 }
 
 /*
@@ -257,8 +283,12 @@ function isRenameOrCopy(status) {
   return status === "R" || status === "C";
 }
 
+// Only the line feed git adds. A carriage return before it is part of the name
+// on a POSIX filesystem, and taking it off names a different directory --
+// which is answered about successfully, so the wrong repository's change set
+// comes back as this one's.
 function withoutNewline(output) {
-  return output.replace(/\r?\n$/, "");
+  return output.replace(/\n$/, "");
 }
 
 function splitFields(output) {

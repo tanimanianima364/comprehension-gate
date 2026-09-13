@@ -532,3 +532,97 @@ test("a broken ref file is a failure, not a missing ref", () => {
   assert.equal(changes.complete, false);
   assert.equal(changeSetCommandOutput(repository).complete, false, "and the command says so");
 });
+
+/*
+ * A git that was killed says nothing and reports no exit code, which is what
+ * an absent ref also looks like if only stderr is consulted. Reading it as an
+ * absence answered every question this file asks with a confident "no" -- no
+ * ref, no default branch, not shallow -- and each of those empties the change
+ * set, so a killed git reported a branch with commits on it as unchanged.
+ *
+ * The injection is a git on PATH that kills itself for one subcommand and
+ * hands every other call to the real one.
+ */
+const SIGNALLED = [
+  ["the base ref lookup", "rev-parse --verify --quiet refs/"],
+  ["the default branch lookup", "symbolic-ref"]
+];
+
+function gitThatDiesOn(pattern) {
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "git-shim-"));
+  const real = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+  fs.writeFileSync(
+    path.join(directory, "git"),
+    `#!/bin/sh\ncase "$*" in\n  *"${pattern}"*) kill -TERM $$ ;;\nesac\nexec ${real} "$@"\n`,
+    { mode: 0o755 }
+  );
+  return directory;
+}
+
+for (const [description, pattern] of SIGNALLED) {
+  test(`a git killed during ${description} is a failure, not an absence`, () => {
+    const repository = createRepository();
+    git(repository, ["checkout", "-q", "-b", "feature"]);
+    write(repository, "committed.js", "export {};\n");
+    commit(repository, "a commit on the branch");
+    assert.deepEqual(changedPaths(repository).paths, ["committed.js"]);
+
+    const previous = process.env.PATH;
+    process.env.PATH = `${gitThatDiesOn(pattern)}:${previous}`;
+    try {
+      const changes = changedPaths(repository);
+      assert.notEqual(changes, null, "the repository itself is still found");
+      assert.equal(changes.complete, false, description);
+    } finally {
+      process.env.PATH = previous;
+    }
+  });
+}
+
+/*
+ * git terminates its answer with a line feed, and a carriage return before it
+ * belongs to the name on a POSIX filesystem. Taking it off names a different
+ * directory, which is then answered about successfully -- the wrong
+ * repository's change set returned as this one's.
+ */
+test("a working directory whose name ends in a carriage return is the one examined", () => {
+  const parent = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "cr-"));
+  const plain = path.join(parent, "repo");
+  const returned = path.join(parent, "repo\r");
+  for (const directory of [plain, returned]) {
+    fs.mkdirSync(directory);
+    git(directory, ["init", "-q", "-b", "main", "."]);
+    git(directory, ["config", "user.email", "test@example.com"]);
+    git(directory, ["config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(directory, "seed.txt"), "x\n");
+    git(directory, ["add", "-A"]);
+    git(directory, ["commit", "-q", "-m", "seed"]);
+  }
+  fs.writeFileSync(path.join(returned, "working.js"), "export {};\n");
+
+  assert.deepEqual(changedPaths(returned), {
+    root: fs.realpathSync(returned),
+    paths: ["working.js"],
+    complete: true
+  });
+  assert.deepEqual(changedPaths(plain).paths, [], "and the neighbour is untouched");
+});
+
+// The shallow check runs only where an empty merge-base answer has to be
+// judged, so the fixture has to be a branch with no common ancestor.
+test("a git killed during the shallow check is a failure, not an absence", () => {
+  const repository = createRepository();
+  git(repository, ["checkout", "-q", "--orphan", "feature"]);
+  write(repository, "committed.js", "export {};\n");
+  commit(repository, "an unrelated history");
+  const unrelated = changedPaths(repository);
+  assert.equal(unrelated.complete, true, "unrelated histories are legitimately empty on that half");
+
+  const previous = process.env.PATH;
+  process.env.PATH = `${gitThatDiesOn("rev-parse --is-shallow-repository")}:${previous}`;
+  try {
+    assert.equal(changedPaths(repository).complete, false);
+  } finally {
+    process.env.PATH = previous;
+  }
+});
