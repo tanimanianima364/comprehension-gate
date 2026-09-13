@@ -521,3 +521,61 @@ test("the documented note lookup is a fixed-string search", () => {
   });
   assert.equal(pattern.status, 1, "while reading it as a pattern finds nothing");
 });
+
+/*
+ * `..` as a prefix is not `..` as a path segment. A file called `..hidden.js`
+ * sits in the repository like any other, and rejecting it as outside left
+ * every note about it unmentioned and every write to it unreported -- while
+ * the change set named it correctly, so the two disagreed.
+ */
+test("a file whose name begins with two dots is inside the repository", () => {
+  const repository = createRepository();
+  writeNote(repository, "2026-09-13-one-a1b2c3d4", ["..hidden.js"], { title: "Why it is hidden" });
+  fs.writeFileSync(path.join(repository, "..hidden.js"), "export {};\n");
+
+  const hint = handleHook(
+    {
+      cwd: repository,
+      hook_event_name: "PreToolUse",
+      tool_name: "Edit",
+      tool_input: { file_path: path.join(repository, "..hidden.js") }
+    },
+    "compatible"
+  );
+  assert.match(hint.stdout, /Why it is hidden/);
+
+  // And a write to one no note covers is reported like any other path.
+  const bare = createRepository();
+  fs.writeFileSync(path.join(bare, "..fresh.js"), "export {};\n");
+  const after = handleHook(
+    {
+      cwd: bare,
+      hook_event_name: "PostToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: path.join(bare, "..fresh.js") }
+    },
+    "compatible"
+  );
+  assert.match(
+    JSON.parse(after.stdout).hookSpecificOutput.additionalContext,
+    /\.\.fresh\.js/
+  );
+});
+
+// A path that really does leave the repository is still refused.
+test("a path that leaves the repository is still outside it", () => {
+  const repository = createRepository();
+  writeNote(repository, "2026-09-13-one-a1b2c3d4", ["src/app.js"]);
+  assert.deepEqual(
+    handleHook(
+      {
+        cwd: repository,
+        hook_event_name: "PreToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: path.join(repository, "..", "outside.js") }
+      },
+      "compatible"
+    ),
+    { exitCode: 0, stdout: "", stderr: "" }
+  );
+});

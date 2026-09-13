@@ -325,7 +325,10 @@ function repositoryRelatives(root, base, raw) {
 
 function insideRepository(root, absolute) {
   const relative = path.relative(root, absolute);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+  // `..` as a prefix is not the same as `..` as a path segment: a file called
+  // `..hidden.js` sits in the repository like any other, and rejecting it left
+  // every note about it unmentioned and every write to it unreported.
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return null;
   }
   return relative.split(path.sep).join("/");
