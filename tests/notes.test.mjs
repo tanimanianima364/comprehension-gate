@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { NOTES_DIRECTORY, uncoveredPaths } from "../core/notes.mjs";
 import { createRepository } from "./helpers.mjs";
 
@@ -361,3 +362,33 @@ test("a note that is not valid UTF-8 covers nothing", () => {
     ["src�.js"]
   );
 });
+
+/*
+ * The samples in the README and in the instructions are what a note is copied
+ * from, so they are read here by the same parser that reads notes. A sample
+ * spelled in a form the parser rejects would teach every note to cover
+ * nothing, and the documentation would be the one place nobody tested.
+ */
+for (const document of ["README.md", "core/instructions.md"]) {
+  test(`the covers sample in ${document} is read as coverage`, () => {
+    const text = fs.readFileSync(path.resolve(fileURLToPath(import.meta.url), "../..", document), "utf8");
+    const samples = [...text.matchAll(/```markdown\n(---\ncovers:\n[\s\S]*?)\n```/g)].map((found) => found[1]);
+    assert.ok(samples.length > 0, `${document} shows at least one note`);
+    for (const [index, sample] of samples.entries()) {
+      // The entries as a reader sees them: the lines after `covers:` that
+      // look like list items, up to the first line that does not.
+      const entries = [];
+      for (const line of sample.split("\n").slice(2)) {
+        if (!line.startsWith("  - ")) {
+          break;
+        }
+        entries.push(line.slice(4));
+      }
+      assert.ok(entries.length > 0, "the sample lists at least one path");
+      const repository = createRepository();
+      const note = `2026-09-14-sample-${index}-0a1b2c3d.md`;
+      writeNote(repository, note, sample);
+      assert.deepEqual(uncoveredPaths(repository, [`${NOTES_DIRECTORY}/${note}`, ...entries]), []);
+    }
+  });
+}
