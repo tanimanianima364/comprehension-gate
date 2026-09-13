@@ -3,7 +3,7 @@
   "version": "0.7.1",
   "private": true,
   "type": "module",
-  "description": "A transcript-independent comprehension gate for coding agents",
+  "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits",
   "engines": {
     "node": ">=18"
   },

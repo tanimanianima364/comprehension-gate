@@ -1,18 +1,18 @@
 {
   "name": "comprehension-gate",
   "version": "0.7.1",
-  "description": "Require demonstrated understanding before meaningful code changes",
+  "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits",
   "author": {
     "name": "Comprehension Gate contributors"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Comprehension Gate",
-    "shortDescription": "Gate meaningful edits on demonstrated understanding.",
-    "longDescription": "Comprehension Gate asks codebase-specific questions and blocks meaningful project mutation until the user demonstrates the required understanding.",
+    "shortDescription": "Record what each change was for, and read it before the next.",
+    "longDescription": "Comprehension Gate asks the coding agent to leave a docstring on what it changed and an immutable note on what the change was for, derives the branch's change set from git to say which paths still have no note, and names a path's notes before the agent reads or edits it. It never blocks a tool or holds a turn.",
     "developerName": "Comprehension Gate contributors",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Run a comprehension check for the current implementation before coding."
+    "defaultPrompt": "List the changed paths on this branch that no note records yet, then write the missing docstrings and notes."
   }
 }

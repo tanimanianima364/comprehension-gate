@@ -1,6 +1,6 @@
 {
   "name": "comprehension-gate",
-  "description": "Require demonstrated understanding before meaningful code changes",
+  "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits",
   "version": "0.7.1",
   "author": {
     "name": "Comprehension Gate contributors"
