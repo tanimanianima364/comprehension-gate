@@ -4,13 +4,13 @@
     "name": "Comprehension Gate contributors"
   },
   "metadata": {
-    "description": "Marketplace for the Comprehension Gate plugin: hooks that ask a coding agent to record what each change was for, and show it the record before it edits"
+    "description": "Marketplace for the Comprehension Gate plugin: hooks that ask a coding agent to record what each change was for, and name the record when the path is read or edited"
   },
   "plugins": [
     {
       "name": "comprehension-gate",
       "source": "./",
-      "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits"
+      "description": "Have the coding agent record what it changed and why — docstrings on the code, an immutable note for any change that is more than mechanical — and name a path's notes as it is read or edited"
     }
   ]
 }

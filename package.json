@@ -3,7 +3,7 @@
   "version": "0.7.1",
   "private": true,
   "type": "module",
-  "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits",
+  "description": "Have the coding agent record what it changed and why — docstrings on the code, an immutable note for any change that is more than mechanical — and name a path's notes as it is read or edited",
   "engines": {
     "node": ">=18"
   },

@@ -1,15 +1,15 @@
 {
   "name": "comprehension-gate",
   "version": "0.7.1",
-  "description": "Have the coding agent leave a docstring and an immutable note for each change, and show it the notes before it edits",
+  "description": "Have the coding agent record what it changed and why — docstrings on the code, an immutable note for any change that is more than mechanical — and name a path's notes as it is read or edited",
   "author": {
     "name": "Comprehension Gate contributors"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Comprehension Gate",
-    "shortDescription": "Record what each change was for, and read it before the next.",
-    "longDescription": "Comprehension Gate asks the coding agent to leave a docstring on what it changed and an immutable note on what the change was for, derives the branch's change set from git to say which paths still have no note, and names a path's notes before the agent reads or edits it. It never blocks a tool or holds a turn.",
+    "shortDescription": "Record why the code changed, and be told what is on record as it is read or edited.",
+    "longDescription": "Comprehension Gate asks the coding agent to leave docstrings on what it changed and an immutable note on what the change was for -- a purely mechanical change needs none -- derives the branch's change set from git to list the paths no note records yet, and names the notes covering a path, with their titles, as the agent reads or edits it. It never blocks a tool or holds a turn.",
     "developerName": "Comprehension Gate contributors",
     "category": "Productivity",
     "capabilities": [],

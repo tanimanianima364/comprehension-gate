@@ -1,4 +1,4 @@
 interface:
   display_name: "Comprehension Gate"
-  short_description: "Check understanding before implementation"
-  default_prompt: "Run a comprehension check for the current implementation before coding."
+  short_description: "Record why the code changed, and be told what is on record as it is read or edited."
+  default_prompt: "List the changed paths on this branch that no note records yet, then write the missing docstrings and notes."
