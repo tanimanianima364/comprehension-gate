@@ -23,7 +23,7 @@ const INSTRUCTIONS_PATH = path.join(path.dirname(SCRIPT_PATH), "instructions.md"
 const CHANGES_PATH = path.join(path.dirname(SCRIPT_PATH), "changes.mjs");
 const MAX_LISTED_PATHS = 10;
 const INCOMPLETE_NOTICE =
-  "Comprehension Gate: part of the change set could not be collected, so nothing can be said about what it holds. Treat the branch as having changes that are not listed rather than as unchanged.";
+  "Intent Notes: part of the change set could not be collected, so nothing can be said about what it holds. Treat the branch as having changes that are not listed rather than as unchanged.";
 // "stop" is no longer registered -- it had nothing left to do once the hosts
 // that could only be warned there were dropped -- but an installed copy that
 // still carries the old configuration must be answered rather than told its
@@ -85,7 +85,7 @@ export function handleHook(input) {
 
   if (!KNOWN_EVENTS.has(event)) {
     return nonBlockingErrorResult(
-      `Comprehension Gate received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}).`
+      `Intent Notes received an unrecognized hook event (${JSON.stringify(input?.hook_event_name ?? null)}).`
     );
   }
 
@@ -118,7 +118,7 @@ export function handleHook(input) {
 // Unparseable stdin means the event type is unknown too, so no event-specific
 // payload can be trusted; a non-zero, non-blocking exit reports this for every event.
 export function malformedInputResult() {
-  return nonBlockingErrorResult("Comprehension Gate could not parse hook input.");
+  return nonBlockingErrorResult("Intent Notes could not parse hook input.");
 }
 
 /*
@@ -154,7 +154,7 @@ function changeNotice(input) {
     ? ""
     : " Part of the change set could not be collected, so this list is short of something.";
   return [
-    `Comprehension Gate: no note on this branch records why these paths changed: ${listPaths(uncovered)}.${short}`,
+    `Intent Notes: no note on this branch records why these paths changed: ${listPaths(uncovered)}.${short}`,
     `Write one under ${NOTES_DIRECTORY}/ covering them, and leave the docstrings on what you changed`,
     "saying what each file and function is for and why it works the way it does.",
     "A purely mechanical change needs no note and can stay listed here.",
@@ -186,7 +186,7 @@ function recordedIntent(input) {
     return note.supersededBy === null ? title : `${title} (superseded by ${note.supersededBy})`;
   });
   return [
-    `Comprehension Gate: ${listPaths(target.paths)} is covered by ${described.map(displayPath).join("; ")}.`,
+    `Intent Notes: ${listPaths(target.paths)} is covered by ${described.map(displayPath).join("; ")}.`,
     "Read what applies before changing it. A change that contradicts a recorded intent is fine,",
     "and is exactly when a new note superseding the old one is owed."
   ].join(" ");

@@ -1,6 +1,6 @@
-# Comprehension Gate
+# Intent Notes
 
-Work normally as a coding agent. The purpose of this gate is to leave behind what the code cannot say for itself: what you were trying to achieve, and why you built it this way rather than another way. Nothing you do while working is refused, nothing holds your turn, and the user is shown no warning. You are asked for two records, and asked no questions.
+Work normally as a coding agent. The purpose of this plugin is to leave behind what the code cannot say for itself: what you were trying to achieve, and why you built it this way rather than another way. Nothing you do while working is refused, nothing holds your turn, and the user is shown no warning. You are asked for two records, and asked no questions.
 
 ## The two records
 

@@ -1,6 +1,6 @@
-# Comprehension Gate
+# Intent Notes
 
-Comprehension Gate puts a deterministic reminder in front of a coding agent: these paths changed on this branch and nothing records why. It does not fork or replace the official `learning-output-style` plugin.
+Intent Notes puts a deterministic reminder in front of a coding agent: these paths changed on this branch and nothing records why. It does not fork or replace the official `learning-output-style` plugin.
 
 What it asks for is two records. **Docstrings** say what a file or function is for and why it works the way it does; they describe the current state, so they merge like code. **Notes** — markdown files under `docs/notes` — say what one change was trying to achieve and which alternative was rejected; they record a moment, so they are never rewritten, and a later change writes a new note that supersedes the old one instead. Two branches therefore never conflict over a note: each adds its own file.
 
@@ -110,18 +110,30 @@ For Claude Code, install `learning-output-style` separately, then install this p
 ```
 
 ```bash
-claude plugin marketplace add /absolute/path/to/comprehension-gate   # or: tanimanianima364/comprehension-gate
-claude plugin install comprehension-gate@comprehension-gate
+claude plugin marketplace add /absolute/path/to/intent-notes   # or: tanimanianima364/intent-notes
+claude plugin install intent-notes@intent-notes
 ```
 
-The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update comprehension-gate` followed by `claude plugin update comprehension-gate@comprehension-gate`.
+The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update intent-notes` followed by `claude plugin update intent-notes@intent-notes`.
+
+**Upgrading from 0.7.x, when the plugin was called `comprehension-gate`.** Neither `marketplace update` nor `plugin update` can carry an installed copy across the rename: the marketplace's own `name` changed, so the name a 0.7.x install knows (`comprehension-gate`) no longer refers to anything to update to, and the plugin id changed with it. Remove the old marketplace — which also uninstalls the plugin that came from it — then add the new one **from the same source you used before** and install:
+
+```bash
+claude plugin marketplace remove comprehension-gate
+claude plugin marketplace add tanimanianima364/intent-notes   # or the exact same local path you registered before
+claude plugin install intent-notes@intent-notes
+```
+
+A local path keeps working after pulling: renaming the repository does not rename a clone, and only the marketplace and plugin names change (the old repository name redirects to the new one).
+
+Two kinds of scope are involved, and they are independent. A marketplace declaration has a scope (`marketplace add --scope`, default `user`), and a plugin installation has its own (`plugin install --scope`, default `user`); a marketplace declared in `user` with the plugin installed in `project` is a legitimate setup. Either can also exist in more than one scope at once — the same marketplace declared in both `user` and `project`, say. Migrate every one of them: remove the old marketplace from **every** scope it is declared in (`marketplace remove` without `--scope` does exactly that), add the new one, from the same source, to **each** scope the old one was declared in, and install `intent-notes@intent-notes` into **each** scope the old plugin was installed in. Anything left behind is a `comprehension-gate` declaration pointing at a marketplace that now calls itself `intent-notes`. Without `--scope`, `marketplace add` and `plugin install` both write to `user`, so a plugin that lived in `project` would otherwise come back in `user`.
 
 `plugin update` compares the version in `.claude-plugin/plugin.json`, not the commit, so a release that does not raise it reports "already at the latest version" and the installed copy silently stays behind. Raise the version in `package.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` together in the same change, and `claude plugin tag` will check that the manifests and the marketplace entry agree before tagging the release.
 
 To load the working tree directly during development instead:
 
 ```bash
-claude --plugin-dir /absolute/path/to/comprehension-gate
+claude --plugin-dir /absolute/path/to/intent-notes
 ```
 
 Updating changes the hook command definitions, and Codex will not run a hook whose definition changed until it is approved again: after an update, open an interactive session and re-approve with `/hooks`.

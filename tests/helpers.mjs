@@ -12,7 +12,7 @@ export function git(directory, args) {
 
 // A repository with one commit, so HEAD exists and the tree is clean.
 export function createRepository() {
-  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-repo-")));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "intent-notes-repo-")));
   git(directory, ["init", "-q", "-b", "main"]);
   git(directory, ["config", "user.email", "test@example.com"]);
   git(directory, ["config", "user.name", "Test"]);

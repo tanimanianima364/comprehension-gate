@@ -1,11 +1,11 @@
 ---
-name: comprehension-gate
-description: Record why the current change was made — a note under docs/notes plus the docstrings on what changed. Use when the user asks to account for a current change, to write the note for it, or explicitly requests a comprehension gate.
+name: intent-notes
+description: Record why the current change was made — a note under docs/notes plus the docstrings on what changed. Use when the user asks to account for a current change, to write the note for it, or explicitly requests intent notes.
 ---
 
-# Comprehension Gate
+# Intent Notes
 
-Record the change this branch has made. The change is everything this branch has done that its base has not — committed and uncommitted alike. Print it by running the exact change set command the active Comprehension Gate session instructions supply, which runs the same code the hook runs. Do not write a `git diff` of your own instead: resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none. If no session instructions are present, say so rather than guessing at a command.
+Record the change this branch has made. The change is everything this branch has done that its base has not — committed and uncommitted alike. Print it by running the exact change set command the active Intent Notes session instructions supply, which runs the same code the hook runs. Do not write a `git diff` of your own instead: resolving the base branch and naming both halves of a rename are easy to get wrong in a one-liner, and a change set that disagrees with the hook's is worse than none. If no session instructions are present, say so rather than guessing at a command.
 
 This check was asked for, so it does not get skipped as mechanical. Produce both records.
 
@@ -19,4 +19,4 @@ Never edit or delete an existing note to make it agree with new work. A note rec
 
 `covers` is the only part a machine reads, so keep it exact, and never widen it to a path the note does not actually explain.
 
-Ask the user nothing. This gate puts no question to anyone: it is a record you leave, not a test you set. When both records are written, say briefly what you recorded and where.
+Ask the user nothing. This skill puts no question to anyone: it is a record you leave, not a test you set. When both records are written, say briefly what you recorded and where.

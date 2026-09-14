@@ -1,6 +1,5 @@
 node_modules/
 coverage/
-.comprehension-gate-state/
 *.tmp
 
 # Per-developer Claude Code config. Shared project settings (.claude/settings.json,

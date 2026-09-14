@@ -398,7 +398,7 @@ test("the notes tree is read once however many paths a tool names", () => {
 test("the documented note lookup is a fixed-string search", () => {
   const documents = [
     fs.readFileSync(path.join(pluginRoot, "core", "instructions.md"), "utf8"),
-    fs.readFileSync(path.join(pluginRoot, "skills", "comprehension-gate", "SKILL.md"), "utf8")
+    fs.readFileSync(path.join(pluginRoot, "skills", "intent-notes", "SKILL.md"), "utf8")
   ];
   for (const text of documents) {
     const command = text.match(/`(grep [^`]+)`/)?.[1];
