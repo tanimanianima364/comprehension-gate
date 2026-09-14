@@ -1,0 +1,4 @@
+interface:
+  display_name: "Intent Notes"
+  short_description: "Record why code changed and surface prior change notes"
+  default_prompt: "Use $intent-notes to record the current branch change and its rationale."

@@ -1,14 +1,14 @@
 {
-  "name": "comprehension-gate",
+  "name": "intent-notes",
   "owner": {
-    "name": "Comprehension Gate contributors"
+    "name": "Intent Notes contributors"
   },
   "metadata": {
-    "description": "Marketplace for the Comprehension Gate plugin: hooks that ask a coding agent to record what a change was for, where it was more than mechanical, and name the record when the path is read or edited"
+    "description": "Marketplace for the Intent Notes plugin: hooks that ask a coding agent to record what a change was for, where it was more than mechanical, and name the record when the path is read or edited"
   },
   "plugins": [
     {
-      "name": "comprehension-gate",
+      "name": "intent-notes",
       "source": "./",
       "description": "Have the coding agent record what it changed and why — docstrings on the code, an immutable note for any change that is more than mechanical — and name a path's notes as it is read or edited"
     }

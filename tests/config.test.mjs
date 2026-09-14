@@ -38,12 +38,12 @@ test("the hook config covers session start, prompt, and both tool events", () =>
 // which saw nothing at all in a repository with no remote.
 test("the manual skill defers to the session instructions for the change set", () => {
   const skill = fs.readFileSync(
-    path.join(root, "skills", "comprehension-gate", "SKILL.md"),
+    path.join(root, "skills", "intent-notes", "SKILL.md"),
     "utf8"
   );
   assert.doesNotMatch(skill, /origin\/HEAD/);
   assert.doesNotMatch(skill, /merge-base/);
-  assert.match(skill, /change set command the active Comprehension Gate session instructions supply/);
+  assert.match(skill, /change set command the active Intent Notes session instructions supply/);
 });
 
 /*
@@ -58,8 +58,8 @@ const USER_FACING = [
   ".claude-plugin/marketplace.json",
   ".codex-plugin/plugin.json",
   "package.json",
-  "skills/comprehension-gate/agents/openai.yaml",
-  "skills/comprehension-gate/SKILL.md"
+  "skills/intent-notes/agents/openai.yaml",
+  "skills/intent-notes/SKILL.md"
 ];
 
 test("user-facing metadata does not describe the removed question-and-block workflow", () => {
@@ -78,16 +78,16 @@ test("user-facing metadata does not describe the removed question-and-block work
 
 /*
  * OpenAI's skill metadata has two constraints a host enforces on display:
- * `default_prompt` must name the skill as `$comprehension-gate`, or the host
+ * `default_prompt` must name the skill as `$intent-notes`, or the host
  * cannot route the prompt to it, and `short_description` is a 25-64 character
  * blurb. The file is read as text because the plugin has no YAML dependency.
  */
 test("the Codex skill metadata names the skill and keeps its blurb short", () => {
-  const text = fs.readFileSync(path.join(root, "skills", "comprehension-gate", "agents", "openai.yaml"), "utf8");
+  const text = fs.readFileSync(path.join(root, "skills", "intent-notes", "agents", "openai.yaml"), "utf8");
   const prompt = text.match(/^\s*default_prompt: "(.*)"$/m)?.[1];
   const blurb = text.match(/^\s*short_description: "(.*)"$/m)?.[1];
   assert.ok(prompt && blurb, "both fields are present, double-quoted");
-  assert.match(prompt, /\$comprehension-gate\b/);
+  assert.match(prompt, /\$intent-notes\b/);
   assert.ok(blurb.length >= 25 && blurb.length <= 64, `${blurb.length} characters: ${blurb}`);
 });
 

@@ -1,6 +1,6 @@
-# Comprehension Gate
+# Intent Notes
 
-Comprehension Gate puts a deterministic reminder in front of a coding agent: these paths changed on this branch and nothing records why. It does not fork or replace the official `learning-output-style` plugin.
+Intent Notes puts a deterministic reminder in front of a coding agent: these paths changed on this branch and nothing records why. It does not fork or replace the official `learning-output-style` plugin.
 
 What it asks for is two records. **Docstrings** say what a file or function is for and why it works the way it does; they describe the current state, so they merge like code. **Notes** — markdown files under `docs/notes` — say what one change was trying to achieve and which alternative was rejected; they record a moment, so they are never rewritten, and a later change writes a new note that supersedes the old one instead. Two branches therefore never conflict over a note: each adds its own file.
 
@@ -110,18 +110,18 @@ For Claude Code, install `learning-output-style` separately, then install this p
 ```
 
 ```bash
-claude plugin marketplace add /absolute/path/to/comprehension-gate   # or: tanimanianima364/comprehension-gate
-claude plugin install comprehension-gate@comprehension-gate
+claude plugin marketplace add /absolute/path/to/intent-notes   # or: tanimanianima364/intent-notes
+claude plugin install intent-notes@intent-notes
 ```
 
-The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update comprehension-gate` followed by `claude plugin update comprehension-gate@comprehension-gate`.
+The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update intent-notes` followed by `claude plugin update intent-notes@intent-notes`.
 
 `plugin update` compares the version in `.claude-plugin/plugin.json`, not the commit, so a release that does not raise it reports "already at the latest version" and the installed copy silently stays behind. Raise the version in `package.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` together in the same change, and `claude plugin tag` will check that the manifests and the marketplace entry agree before tagging the release.
 
 To load the working tree directly during development instead:
 
 ```bash
-claude --plugin-dir /absolute/path/to/comprehension-gate
+claude --plugin-dir /absolute/path/to/intent-notes
 ```
 
 Updating changes the hook command definitions, and Codex will not run a hook whose definition changed until it is approved again: after an update, open an interactive session and re-approve with `/hooks`.

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("the hook entrypoint runs when the plugin root is reached through a symlink", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "comprehension-gate-symlink-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intent-notes-symlink-"));
   const linkedRoot = path.join(directory, "plugin");
   fs.symlinkSync(pluginRoot, linkedRoot, "dir");
 
