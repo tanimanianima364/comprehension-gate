@@ -116,15 +116,15 @@ claude plugin install intent-notes@intent-notes
 
 The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update intent-notes` followed by `claude plugin update intent-notes@intent-notes`.
 
-**Upgrading from 0.7.x, when the plugin was called `comprehension-gate`.** Neither `marketplace update` nor `plugin update` can carry an installed copy across the rename: the marketplace's own `name` changed, so the name a 0.7.x install knows (`comprehension-gate`) no longer refers to anything to update to, and the plugin id changed with it. Remove the old marketplace — which also uninstalls the plugin that came from it — then add the new one and install:
+**Upgrading from 0.7.x, when the plugin was called `comprehension-gate`.** Neither `marketplace update` nor `plugin update` can carry an installed copy across the rename: the marketplace's own `name` changed, so the name a 0.7.x install knows (`comprehension-gate`) no longer refers to anything to update to, and the plugin id changed with it. Remove the old marketplace — which also uninstalls the plugin that came from it — then add the new one **from the same source you used before** and install:
 
 ```bash
 claude plugin marketplace remove comprehension-gate
-claude plugin marketplace add tanimanianima364/intent-notes
+claude plugin marketplace add tanimanianima364/intent-notes   # or the same /absolute/path/to/intent-notes you registered
 claude plugin install intent-notes@intent-notes
 ```
 
-The old repository name redirects to the new one, so a local path passed to `marketplace add` still works after pulling; only the marketplace and plugin names change.
+A local path keeps working after pulling, since only the marketplace and plugin names change (the old repository name redirects to the new one). If the old marketplace was declared in the `project` or `local` scope rather than the default `user` scope, pass that same `--scope` to all three commands: without it, `marketplace remove` removes the declaration from every scope it can edit, and `marketplace add` and `plugin install` write to `user`, so the plugin would come back in a different scope than it left.
 
 `plugin update` compares the version in `.claude-plugin/plugin.json`, not the commit, so a release that does not raise it reports "already at the latest version" and the installed copy silently stays behind. Raise the version in `package.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` together in the same change, and `claude plugin tag` will check that the manifests and the marketplace entry agree before tagging the release.
 
