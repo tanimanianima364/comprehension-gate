@@ -70,7 +70,25 @@ test("user-facing metadata does not describe the removed question-and-block work
       /comprehension check|demonstrated? understanding|understanding before|blocks? meaningful|require[sd]? .*understanding/i,
       relativePath
     );
+    // A purely mechanical change needs no note, so no blurb may promise one
+    // for every change. `\b` keeps "each changed path" out of it.
+    assert.doesNotMatch(text, /\b(each|every) change\b/i, relativePath);
   }
+});
+
+/*
+ * OpenAI's skill metadata has two constraints a host enforces on display:
+ * `default_prompt` must name the skill as `$comprehension-gate`, or the host
+ * cannot route the prompt to it, and `short_description` is a 25-64 character
+ * blurb. The file is read as text because the plugin has no YAML dependency.
+ */
+test("the Codex skill metadata names the skill and keeps its blurb short", () => {
+  const text = fs.readFileSync(path.join(root, "skills", "comprehension-gate", "agents", "openai.yaml"), "utf8");
+  const prompt = text.match(/^\s*default_prompt: "(.*)"$/m)?.[1];
+  const blurb = text.match(/^\s*short_description: "(.*)"$/m)?.[1];
+  assert.ok(prompt && blurb, "both fields are present, double-quoted");
+  assert.match(prompt, /\$comprehension-gate\b/);
+  assert.ok(blurb.length >= 25 && blurb.length <= 64, `${blurb.length} characters: ${blurb}`);
 });
 
 // Four manifests carry one description, or a host shows whichever it reads.

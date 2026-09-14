@@ -1,4 +1,4 @@
 interface:
   display_name: "Comprehension Gate"
-  short_description: "Record why the code changed, and be told what is on record as it is read or edited."
-  default_prompt: "List the changed paths on this branch that no note records yet, then write the missing docstrings and notes."
+  short_description: "Record why code changed and surface prior change notes"
+  default_prompt: "Use $comprehension-gate to record the current branch change and its rationale."

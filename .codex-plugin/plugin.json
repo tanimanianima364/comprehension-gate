@@ -8,11 +8,11 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Comprehension Gate",
-    "shortDescription": "Record why the code changed, and be told what is on record as it is read or edited.",
+    "shortDescription": "Record why code changed and surface prior change notes",
     "longDescription": "Comprehension Gate asks the coding agent to leave docstrings on what it changed and an immutable note on what the change was for -- a purely mechanical change needs none -- derives the branch's change set from git to list the paths no note records yet, and names the notes covering a path, with their titles, as the agent reads or edits it. It never blocks a tool or holds a turn.",
     "developerName": "Comprehension Gate contributors",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "List the changed paths on this branch that no note records yet, then write the missing docstrings and notes."
+    "defaultPrompt": "Use $comprehension-gate to record the current branch change and its rationale."
   }
 }
