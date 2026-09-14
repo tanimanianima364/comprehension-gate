@@ -1,4 +1,4 @@
 interface:
   display_name: "Comprehension Gate"
-  short_description: "Check understanding before implementation"
-  default_prompt: "Run a comprehension check for the current implementation before coding."
+  short_description: "Record why code changed and surface prior change notes"
+  default_prompt: "Use $comprehension-gate to record the current branch change and its rationale."
