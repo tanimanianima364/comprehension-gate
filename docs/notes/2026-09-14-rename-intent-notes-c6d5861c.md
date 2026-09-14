@@ -8,6 +8,8 @@ covers:
   - core/gate.mjs
   - core/instructions.md
   - package.json
+  - skills/comprehension-gate/SKILL.md
+  - skills/comprehension-gate/agents/openai.yaml
   - skills/intent-notes/SKILL.md
   - skills/intent-notes/agents/openai.yaml
   - tests/config.test.mjs
@@ -62,7 +64,7 @@ carrying the old name.
 
 ## How it is built
 
-A mechanical substitution, checked by the suite: the tests that read the
+The old skill paths are in `covers` as well as the new: the change set names both halves of a rename, and the deletion is part of this change. A mechanical substitution otherwise, checked by the suite: the tests that read the
 skill files, match the hook messages and the instructions title, and
 require `$intent-notes` in the skill metadata all changed with it, and the
 grep for the old name outside `docs/` is empty except for the test that
