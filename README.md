@@ -116,6 +116,16 @@ claude plugin install intent-notes@intent-notes
 
 The hooks take effect in the next session. After pulling changes, refresh the installed copy with `claude plugin marketplace update intent-notes` followed by `claude plugin update intent-notes@intent-notes`.
 
+**Upgrading from 0.7.x, when the plugin was called `comprehension-gate`.** Neither `marketplace update` nor `plugin update` can carry an installed copy across the rename: the marketplace's own `name` changed, so the name a 0.7.x install knows (`comprehension-gate`) no longer refers to anything to update to, and the plugin id changed with it. Remove the old marketplace — which also uninstalls the plugin that came from it — then add the new one and install:
+
+```bash
+claude plugin marketplace remove comprehension-gate
+claude plugin marketplace add tanimanianima364/intent-notes
+claude plugin install intent-notes@intent-notes
+```
+
+The old repository name redirects to the new one, so a local path passed to `marketplace add` still works after pulling; only the marketplace and plugin names change.
+
 `plugin update` compares the version in `.claude-plugin/plugin.json`, not the commit, so a release that does not raise it reports "already at the latest version" and the installed copy silently stays behind. Raise the version in `package.json`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` together in the same change, and `claude plugin tag` will check that the manifests and the marketplace entry agree before tagging the release.
 
 To load the working tree directly during development instead:
